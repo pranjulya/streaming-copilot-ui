@@ -2,6 +2,8 @@
 
 Planning-only repository for a full chat-style Copilot with persistent history and typed NDJSON streaming.
 
+Agent entrypoint: [`AGENTS.md`](AGENTS.md) (required at repo root for Grok/SOL and other coding agents).
+
 ## Status
 
 **Planning package expanded and awaiting approval; implementation not started.** Phase 00 is blocked until this package is reviewed and explicitly approved.
@@ -18,6 +20,8 @@ Planning-only repository for a full chat-style Copilot with persistent history a
 - Generation owner leases for multi-replica safety
 
 ## Planning package
+
+- [Agent project rules](AGENTS.md)
 
 - [Product requirements](docs/PRD.md)
 - [High-level design](docs/HLD.md)

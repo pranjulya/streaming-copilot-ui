@@ -1,6 +1,6 @@
 # Streaming Copilot UI — Master Implementation Blueprint
 
-> **For agentic workers:** REQUIRED SUB-SKILL: use `superpowers:subagent-driven-development` or `superpowers:executing-plans` only after the complete planning package is approved. Track every phase with its checkboxes and stop at each review gate.
+> **For agentic workers:** Read root `AGENTS.md` first. REQUIRED SUB-SKILL: use `superpowers:subagent-driven-development` or `superpowers:executing-plans` only after the complete planning package is approved. Track every phase with its checkboxes and stop at each review gate.
 
 **Goal:** Build a production-minded full-chat Copilot that persists canonical history and streams typed NDJSON responses with deterministic cancellation, retry, regeneration, and recovery.
 
