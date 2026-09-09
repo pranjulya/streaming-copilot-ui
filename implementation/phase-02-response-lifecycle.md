@@ -68,9 +68,11 @@ async def follow_events(run_id: UUID, after_sequence: int) -> list[StreamEvent]
 
 ### Task 5: Lease orphan recovery
 
-- [ ] Reaper (callable on a timer, also at startup) fails NULL or expired leases regardless of owner, plus this-instance non-terminal rows.
+- [ ] Startup reaper fails NULL or expired leases regardless of owner, **and** this-instance non-terminal rows even if the lease is unexpired.
+- [ ] Periodic reaper (`≤ LEASE_SECONDS`) fails **only** NULL or expired leases. An unexpired this-instance run the live supervisor is renewing is unchanged.
 - [ ] Run with another instance’s **unexpired** lease is unchanged.
-- [ ] Fast restart with a new `INSTANCE_ID` before expiry: run stays active until expiry, then the next reaper tick on **any** replica fails it.
+- [ ] Fast restart with a new `INSTANCE_ID` before expiry: run stays active until expiry, then the next periodic tick on **any** replica fails it.
+- [ ] Fast restart with the **same** `INSTANCE_ID` before expiry: startup reaper fails the this-instance row; a periodic tick would not.
 - [ ] Commit `feat: recover expired generation leases`.
 
 ### Task 6: Run HTTP (JSON)

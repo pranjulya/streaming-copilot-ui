@@ -39,7 +39,7 @@ If a plan conflicts with an approved spec, **stop and amend the spec** before wr
 - Authenticated `Actor.user_id` on every `/v1` query; missing/not-owned → `404` (not `403`)
 - Idempotency on create/patch/send/retry/regenerate; cancel has no idempotency key
 - One active run per conversation; per-user active-run cap
-- Generation owner lease stamped in the create/retry/regenerate transaction; every replica reaps expired/NULL leases on a timer
+- Generation owner lease stamped in the create/retry/regenerate transaction; every replica reaps expired/NULL leases on a timer; same-instance non-terminal cleanup is startup-only
 - Heartbeats are connection-only; `response.snapshot` is synthesized, not stored
 - Terminal assistant content is immutable; retry and regenerate insert a new visible version
 - Model output is data: sanitize Markdown; never log prompt/response content

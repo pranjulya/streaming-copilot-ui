@@ -76,7 +76,7 @@
 
 ## ADR-013: Generation owner lease
 
-**Decision:** `response_runs.owner_instance_id` plus `lease_expires_at` identify the supervising API process. Every replica reaps NULL or expired leases on a timer (not only at boot). Cancel is a cross-replica column; the owner observes it. Live processes must use distinct instance ids.
+**Decision:** `response_runs.owner_instance_id` plus `lease_expires_at` identify the supervising API process. Every replica reaps NULL or expired leases on a timer. Same-instance non-terminal cleanup runs at startup only so a live supervisor is not reaped by its own periodic tick. Cancel is a cross-replica column; the owner observes it. Live processes must use distinct instance ids.
 
 **Reason:** Without a lease, replica restart would fail live runs owned by healthy replicas.
 

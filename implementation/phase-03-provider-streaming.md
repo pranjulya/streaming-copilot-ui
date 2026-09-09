@@ -37,7 +37,7 @@ class LlmProvider(Protocol):
 
 ### Task 3: Supervisor
 
-- [ ] `start(run_id)` **renews** the existing lease (does not insert the first lease), opens provider, `append_delta` on flush thresholds (`DELTA_FLUSH_MS` / `DELTA_FLUSH_CHARS`), heartbeats are **not** written to DB. A timer `≤ LEASE_SECONDS` runs the same orphan reaper as Phase 02.
+- [ ] `start(run_id)` **renews** the existing lease (does not insert the first lease), opens provider, `append_delta` on flush thresholds (`DELTA_FLUSH_MS` / `DELTA_FLUSH_CHARS`), heartbeats are **not** written to DB. A timer `≤ LEASE_SECONDS` runs the Phase 02 **periodic** reaper (NULL/expired leases only). Startup still runs the broader this-instance cleanup from Phase 02.
 - [ ] Observes `cancel_requested_at` and `signal`; commits `response.cancelled`.
 - [ ] Provider error → `fail_run` with public code, partial kept.
 - [ ] Output longer than `MAX_OUTPUT_CHARS` → `output_limit_exceeded`.

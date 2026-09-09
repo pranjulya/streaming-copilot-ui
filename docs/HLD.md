@@ -60,7 +60,7 @@ Upgrade to a durable queue and pub/sub only when measured write volume, multi-re
 - CDN/edge serves Next.js static assets and forwards application traffic.
 - Next.js and FastAPI share a site boundary; the API remains independently scalable.
 - A managed PostgreSQL instance is the only mandatory state service.
-- Multiple API replicas are safe because authoritative state and event cursors live in PostgreSQL. A run continues only on the replica holding a live owner lease; another replica may serve replay and cancellation requests. Expired leases or this-instance rows are recovered as `failed/server_restart`.
+- Multiple API replicas are safe because authoritative state and event cursors live in PostgreSQL. A run continues only on the replica holding a live owner lease; another replica may serve replay and cancellation requests. NULL or expired leases are recovered as `failed/server_restart` on a timer. Same-instance non-terminal rows are recovered only at startup, not by the periodic reaper (which would otherwise fail healthy local runs the supervisor is renewing).
 - Graceful shutdown stops accepting new runs, gives active tasks a bounded drain window, then marks unfinished runs recoverable as failed.
 
 ## 6. Scaling thresholds

@@ -164,7 +164,12 @@ It maintains only local task handles. Authoritative status remains in PostgreSQL
 
 Each process has a boot-time `INSTANCE_ID` (random UUID unless configured). **Live processes must not share an `INSTANCE_ID`.** The create/retry/regenerate transaction is the first lease writer. `start` only renews an existing lease; it does not claim NULL rows.
 
-The supervisor loop renews on `LEASE_RENEW_SECONDS`. **Every live replica** also runs orphan recovery on a timer `≤ LEASE_SECONDS` (and once at startup): fail non-terminal runs with `lease_expires_at IS NULL` or `lease_expires_at < now()`, plus any non-terminal rows this instance owns (covers a stable-id restart before expiry). A live lease that is not yet expired and owned by another instance is left alone. After process death, the run becomes terminal within one lease interval plus one reaper tick. Any replica may set `cancel_requested_at`; the owner observes it at the next delta/lease tick.
+The supervisor loop renews on `LEASE_RENEW_SECONDS`. **Every live replica** runs two distinct orphan-recovery paths:
+
+1. **Startup only:** fail non-terminal runs this instance owns, even if the lease has not expired (covers a crash/restart that reused a stable `INSTANCE_ID` before expiry).
+2. **Periodic timer `≤ LEASE_SECONDS`:** fail only non-terminal runs with `lease_expires_at IS NULL` or `lease_expires_at < now()`. Do **not** fail unexpired leases owned by this instance; the live supervisor is renewing them.
+
+A live unexpired lease owned by another instance is left alone. After process death with a new instance id, the run becomes terminal within one lease interval plus one reaper tick. Any replica may set `cancel_requested_at`; the owner observes it at the next delta/lease tick.
 
 ## 4. Streaming mechanics
 
