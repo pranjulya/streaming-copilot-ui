@@ -1,0 +1,16 @@
+{
+  "protocol_version": "1.0",
+  "sequence": 3,
+  "event_id": "0195f4db-2159-7d06-8895-1c0f36c7d808",
+  "type": "response.snapshot",
+  "occurred_at": "2026-09-09T10:30:12.481Z",
+  "conversation_id": "0195f4d4-4ee0-7a35-8bc4-63cb5966b448",
+  "run_id": "0195f4da-4ee0-7a35-8bc4-63cb5966b448",
+  "data": {
+    "status": "streaming",
+    "user_message_id": "0195f4d8-4ee0-7a35-8bc4-63cb5966b448",
+    "assistant_message_id": "0195f4d8-4ee0-7a35-8bc4-63cb5966b449",
+    "content": "Backpressure 👍\nkeeps a slow reader safe.",
+    "last_sequence": 3
+  }
+}

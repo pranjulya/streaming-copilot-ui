@@ -1,0 +1,16 @@
+{
+  "protocol_version": "1.0",
+  "sequence": 5,
+  "event_id": "0195f4db-2159-7d06-8895-1c0f36c7d805",
+  "type": "response.completed",
+  "occurred_at": "2026-09-09T10:30:12.481Z",
+  "conversation_id": "0195f4d4-4ee0-7a35-8bc4-63cb5966b448",
+  "run_id": "0195f4da-4ee0-7a35-8bc4-63cb5966b448",
+  "data": {
+    "finish_reason": "stop",
+    "usage": {
+      "input_tokens": 42,
+      "output_tokens": 18
+    }
+  }
+}

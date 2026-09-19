@@ -1,0 +1,15 @@
+{
+  "protocol_version": "1.0",
+  "sequence": 1,
+  "event_id": "0195f4db-2159-7d06-8895-1c0f36c7d800",
+  "type": "response.started",
+  "occurred_at": "2026-09-09T10:30:12.481Z",
+  "conversation_id": "0195f4d4-4ee0-7a35-8bc4-63cb5966b448",
+  "run_id": "0195f4da-4ee0-7a35-8bc4-63cb5966b448",
+  "data": {
+    "user_message_id": "0195f4d8-4ee0-7a35-8bc4-63cb5966b448",
+    "assistant_message_id": "0195f4d8-4ee0-7a35-8bc4-63cb5966b449",
+    "client_message_id": "34e344a0-b84b-4ce6-8181-aa38ff17553f",
+    "attempt": 1
+  }
+}

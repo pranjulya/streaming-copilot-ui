@@ -1,0 +1,65 @@
+name: Phase 00 checks
+
+on:
+  pull_request:
+  push:
+    branches: [main, phase-00-foundation-and-contracts]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phase-00-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  foundation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      APP_ENV: development
+      DATABASE_URL: postgresql+asyncpg://copilot:copilot@127.0.0.1:5432/copilot
+      TEST_DATABASE_URL: postgresql+asyncpg://copilot:copilot@127.0.0.1:5432/copilot
+      NEXT_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.12.15'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: '10.34.5'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+          cache-dependency-path: apps/web/pnpm-lock.yaml
+      - name: Start PostgreSQL 16 from the shipped Compose file
+        run: |
+          docker compose up -d --wait
+          docker compose exec -T postgres pg_isready -U copilot
+      - name: Install locked dependencies
+        run: |
+          uv sync --project services/api --locked
+          pnpm --dir apps/web install --frozen-lockfile
+      - name: API and contract checks with real PostgreSQL
+        run: |
+          uv run --project services/api ruff check services/api
+          uv run --project services/api ruff format --check services/api contracts/tests scripts
+          uv run --project services/api mypy --strict services/api/app
+          uv run --project services/api pytest -q
+      - name: Web checks and build
+        run: |
+          pnpm --dir apps/web test
+          pnpm --dir apps/web lint
+          pnpm --dir apps/web typecheck
+          pnpm --dir apps/web format:check
+          pnpm --dir apps/web build
+      - name: Verify actual development proxy with healthy database
+        run: uv run --project services/api python scripts/smoke.py --require-db
+      - name: Stop local database
+        if: always()
+        run: docker compose down
