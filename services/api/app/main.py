@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from app.api.errors import install_error_handlers
 from app.api.health import router
 from app.settings import Settings
 
@@ -26,5 +27,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await engine.dispose()
 
     app = FastAPI(title="Streaming Copilot API", version="0.1.0", lifespan=lifespan)
+    app.state.settings = config
+    install_error_handlers(app)
     app.include_router(router)
     return app

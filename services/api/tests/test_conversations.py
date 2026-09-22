@@ -8,6 +8,9 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection, create_async_engine
 
+from app.main import create_app
+from app.settings import Settings
+
 pytestmark = pytest.mark.skipif(
     not os.getenv("TEST_DATABASE_URL"), reason="Set TEST_DATABASE_URL for real Postgres"
 )
@@ -278,3 +281,84 @@ def test_hidden_assistant_version_allowed_for_same_reply() -> None:
             await engine.dispose()
 
     asyncio.run(scenario())
+
+
+def auth_probe_app(**overrides: object):
+    from fastapi import Depends
+
+    settings = Settings(
+        _env_file=None,
+        database_url="postgresql+asyncpg://a:b@127.0.0.1:1/db",
+        **overrides,  # type: ignore[arg-type]
+    )
+    app = create_app(settings)
+
+    from app.api.auth import Actor, require_actor
+
+    @app.get("/v1/_auth-probe")
+    def probe(actor: Actor = Depends(require_actor)) -> dict[str, str]:
+        return {"user_id": actor.user_id}
+
+    return app
+
+
+def staging_settings_overrides() -> dict[str, object]:
+    return {
+        "app_env": "staging",
+        "xai_api_key": "test-key",
+        "auth_jwt_issuer": "https://auth.example.test",
+        "auth_jwt_audience": "copilot",
+        "auth_jwt_jwks_url": "https://auth.example.test/jwks.json",
+    }
+
+
+def test_missing_actor_returns_unauthenticated_problem() -> None:
+    from fastapi.testclient import TestClient
+
+    app = auth_probe_app(**staging_settings_overrides())
+    with TestClient(app) as client:
+        response = client.get("/v1/_auth-probe")
+    assert response.status_code == 401
+    assert response.headers["content-type"] == "application/problem+json"
+    body = response.json()
+    assert body["code"] == "unauthenticated"
+    assert body["type"] == "https://copilot.local/problems/unauthenticated"
+    assert body["status"] == 401
+    uuid.UUID(body["diagnostic_id"])
+
+
+def test_dev_user_header_sets_actor_user_id() -> None:
+    from fastapi.testclient import TestClient
+
+    with TestClient(auth_probe_app()) as client:
+        response = client.get("/v1/_auth-probe", headers={"X-Dev-User": "alice"})
+    assert response.status_code == 200
+    assert response.json() == {"user_id": "alice"}
+
+
+def test_dev_header_rejected_outside_development() -> None:
+    from fastapi.testclient import TestClient
+
+    app = auth_probe_app(**staging_settings_overrides())
+    with TestClient(app) as client:
+        response = client.get("/v1/_auth-probe", headers={"X-Dev-User": "alice"})
+    assert response.status_code == 401
+    assert response.json()["code"] == "unauthenticated"
+
+
+def test_missing_dev_header_falls_back_to_configured_user() -> None:
+    from fastapi.testclient import TestClient
+
+    with TestClient(auth_probe_app(dev_user_id="configured-user")) as client:
+        response = client.get("/v1/_auth-probe")
+    assert response.status_code == 200
+    assert response.json() == {"user_id": "configured-user"}
+
+
+def test_blank_dev_header_falls_back_to_configured_user() -> None:
+    from fastapi.testclient import TestClient
+
+    with TestClient(auth_probe_app(dev_user_id="configured-user")) as client:
+        response = client.get("/v1/_auth-probe", headers={"X-Dev-User": "   "})
+    assert response.status_code == 200
+    assert response.json() == {"user_id": "configured-user"}
