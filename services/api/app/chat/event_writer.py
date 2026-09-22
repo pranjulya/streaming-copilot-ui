@@ -304,3 +304,46 @@ async def cancel_run(run_id: UUID, *, session: AsyncSession) -> StreamEvent:
             "content": message.content,
         }
         return await _insert_event(session, run, "response.cancelled", data)
+
+
+async def follow_events(
+    run_id: UUID, after_sequence: int, *, session: AsyncSession
+) -> list[StreamEvent]:
+    run = await session.get(ResponseRun, run_id)
+    if run is None:
+        raise AppError(404, "not_found", "Response run not found")
+    records = (
+        await session.scalars(
+            select(StreamEventRecord)
+            .where(
+                StreamEventRecord.run_id == run_id,
+                StreamEventRecord.sequence > after_sequence,
+            )
+            .order_by(StreamEventRecord.sequence)
+        )
+    ).all()
+    events = [_envelope(record, run.conversation_id) for record in records]
+    needs_snapshot = after_sequence < run.last_sequence and (
+        not records or records[0].sequence > after_sequence + 1
+    )
+    if needs_snapshot:
+        message = await _load_message(session, run.assistant_message_id)
+        data: dict[str, object] = {
+            "status": run.status,
+            "user_message_id": str(run.user_message_id),
+            "assistant_message_id": str(run.assistant_message_id),
+            "content": message.content,
+            "last_sequence": run.last_sequence,
+        }
+        snapshot = StreamEvent(
+            protocol_version=PROTOCOL_VERSION,
+            sequence=run.last_sequence,
+            event_id=uuid4(),
+            type="response.snapshot",
+            occurred_at=datetime.now(UTC),
+            conversation_id=run.conversation_id,
+            run_id=run.id,
+            data=data,
+        )
+        return [snapshot, *events]
+    return events

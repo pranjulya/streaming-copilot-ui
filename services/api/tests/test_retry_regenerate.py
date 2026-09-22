@@ -66,6 +66,12 @@ async def seed_plain_conversation(
     return user, conversation_id
 
 
+def writer_factory():
+    from app.persistence.session import create_database_engine, create_session_factory
+
+    return create_session_factory(create_database_engine(database_url()))
+
+
 def create_cmd(
     conversation_id: uuid.UUID,
     *,
