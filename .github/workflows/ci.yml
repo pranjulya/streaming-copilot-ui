@@ -45,6 +45,8 @@ jobs:
         run: |
           uv sync --project services/api --locked
           pnpm --dir apps/web install --frozen-lockfile
+      - name: Apply database migrations
+        run: uv run --project services/api alembic -c services/api/alembic.ini upgrade head
       - name: API and contract checks with real PostgreSQL
         run: |
           uv run --project services/api ruff check services/api

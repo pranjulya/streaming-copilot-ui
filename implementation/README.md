@@ -32,4 +32,5 @@ This directory is an execution map, not application code. Read `../Implementatio
 |---:|---|---|
 | Planning | Approved | Explicit user approval, 2026-09-19, baseline `53c1b7c` |
 | 00 | Implementation under verification | Phase 00 explicitly authorized in the same conversation |
-| 01–08 | Not started | Phase 00 gate remains |
+| 01 | Implemented; pending gate review | TDD complete on `phase-01-persistence-and-conversations` (3 phase-scoped commits) |
+| 02–08 | Not started | Phase 01 gate remains |
