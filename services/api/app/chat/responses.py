@@ -2,12 +2,14 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import func, select, text
+from sqlalchemy import ColumnElement, func, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.auth import Actor
 from app.api.errors import AppError
+from app.chat.event_writer import SafeFailure, fail_run
+from app.chat.state_machine import InvalidStateTransition
 from app.persistence.models import (
     Conversation,
     IdempotencyRecord,
@@ -492,3 +494,63 @@ async def regenerate_message(
         "conversation_busy",
         "Conversation already has an active response",
     )
+
+
+def _restart_failure() -> SafeFailure:
+    return SafeFailure(
+        code="server_restart",
+        message="The assistant stopped responding. Retrying is safe.",
+        retryable=True,
+    )
+
+
+def _orphan_condition(settings: Settings, *, include_own_instance: bool) -> ColumnElement[bool]:
+    now = datetime.now(UTC)
+    conditions = [
+        ResponseRun.lease_expires_at.is_(None),
+        ResponseRun.lease_expires_at <= now,
+    ]
+    if include_own_instance:
+        conditions.append(ResponseRun.owner_instance_id == settings.instance_id)
+    return or_(*conditions)
+
+
+async def _fail_targets(session: AsyncSession, target_ids: list[UUID]) -> int:
+    reaped = 0
+    for run_id in target_ids:
+        try:
+            await fail_run(run_id, _restart_failure(), session=session)
+            reaped += 1
+        except InvalidStateTransition:
+            continue
+    return reaped
+
+
+async def reap_orphaned_runs(*, session: AsyncSession, settings: Settings) -> int:
+    async with session.begin():
+        target_ids = list(
+            (
+                await session.scalars(
+                    select(ResponseRun.id).where(
+                        ResponseRun.status.in_(ACTIVE_RUN_STATUSES),
+                        _orphan_condition(settings, include_own_instance=True),
+                    )
+                )
+            ).all()
+        )
+    return await _fail_targets(session, target_ids)
+
+
+async def reap_expired_leases(*, session: AsyncSession, settings: Settings) -> int:
+    async with session.begin():
+        target_ids = list(
+            (
+                await session.scalars(
+                    select(ResponseRun.id).where(
+                        ResponseRun.status.in_(ACTIVE_RUN_STATUSES),
+                        _orphan_condition(settings, include_own_instance=False),
+                    )
+                )
+            ).all()
+        )
+    return await _fail_targets(session, target_ids)

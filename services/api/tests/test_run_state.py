@@ -1,6 +1,7 @@
 import asyncio
 import os
 import uuid
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import text
@@ -85,39 +86,65 @@ def test_one_active_run_per_conversation_enforced() -> None:
 
 def test_stream_events_primary_key_is_run_and_sequence() -> None:
     async def scenario() -> None:
-        run_id, *_ = await seed_run_in_new_engine()
         engine = create_async_engine(database_url())
+        user = new_user("pk-event")
         try:
-            async with engine.begin() as connection:
+            async with engine.connect() as connection:
+                transaction = await connection.begin()
+                conversation_id = await seed_conversation(connection, user)
+                user_message_id, assistant_message_id = await seed_messages(
+                    connection, conversation_id
+                )
+                run_id = await seed_run(
+                    connection, conversation_id, user, user_message_id, assistant_message_id
+                )
                 await seed_event(connection, run_id, 1)
+                with pytest.raises(IntegrityError) as caught:
+                    await connection.execute(
+                        text(
+                            "INSERT INTO stream_events (run_id, sequence, event_id, type,"
+                            " payload, occurred_at)"
+                            " VALUES (:run_id, 1, :event_id, 'message.delta', '{}'::jsonb, now())"
+                        ),
+                        {"run_id": run_id, "event_id": uuid.uuid4()},
+                    )
+                assert caught.value.orig.sqlstate == "23505"
+                await transaction.rollback()
         finally:
             await engine.dispose()
-        await expect_sqlstate(
-            "INSERT INTO stream_events (run_id, sequence, event_id, type, payload, occurred_at)"
-            " VALUES (:run_id, 1, :event_id, 'message.delta', '{}'::jsonb, now())",
-            {"run_id": run_id, "event_id": uuid.uuid4()},
-            "23505",
-        )
 
     asyncio.run(scenario())
 
 
 def test_stream_event_ids_are_globally_unique() -> None:
     async def scenario() -> None:
-        run_id, *_ = await seed_run_in_new_engine()
-        shared_event_id = uuid.uuid4()
         engine = create_async_engine(database_url())
+        user = new_user("event-id")
+        shared_event_id = uuid.uuid4()
         try:
-            async with engine.begin() as connection:
+            async with engine.connect() as connection:
+                transaction = await connection.begin()
+                conversation_id = await seed_conversation(connection, user)
+                user_message_id, assistant_message_id = await seed_messages(
+                    connection, conversation_id
+                )
+                run_id = await seed_run(
+                    connection, conversation_id, user, user_message_id, assistant_message_id
+                )
                 await seed_event(connection, run_id, 1, event_id=shared_event_id)
+                with pytest.raises(IntegrityError) as caught:
+                    await connection.execute(
+                        text(
+                            "INSERT INTO stream_events (run_id, sequence, event_id, type,"
+                            " payload, occurred_at)"
+                            " VALUES (:run_id, 2, :event_id, 'message.delta', '{}'::jsonb, now())"
+                        ),
+                        {"run_id": run_id, "event_id": shared_event_id},
+                    )
+                assert caught.value.orig.sqlstate == "23505"
+                await transaction.rollback()
         finally:
             await engine.dispose()
-        await expect_sqlstate(
-            "INSERT INTO stream_events (run_id, sequence, event_id, type, payload, occurred_at)"
-            " VALUES (:run_id, 2, :event_id, 'message.delta', '{}'::jsonb, now())",
-            {"run_id": run_id, "event_id": shared_event_id},
-            "23505",
-        )
 
     asyncio.run(scenario())
 
@@ -515,5 +542,217 @@ def test_fail_run_is_terminal_and_idempotent() -> None:
         assert error_code == "provider_unavailable"
         assert content == "half"
         assert message_status == "failed"
+
+    asyncio.run(scenario())
+
+
+async def seed_reap_target(
+    factory,
+    user: str,
+    *,
+    owner: uuid.UUID | None,
+    lease,
+) -> uuid.UUID:
+    from tests.support import seed_conversation, seed_messages, seed_run
+
+    async with factory() as session:
+        async with session.begin():
+            conversation_id = await seed_conversation(session, user)
+            user_message_id, assistant_message_id = await seed_messages(session, conversation_id)
+            return await seed_run(
+                session,
+                conversation_id,
+                user,
+                user_message_id,
+                assistant_message_id,
+                owner_instance_id=owner,
+                lease_expires_at=lease,
+            )
+
+
+async def reap_statuses(factory, run_ids: list[uuid.UUID]) -> dict[uuid.UUID, str]:
+    from sqlalchemy import text as sql_text
+
+    async with factory() as session:
+        rows = (
+            await session.execute(
+                sql_text("SELECT id, status FROM response_runs WHERE id = ANY(:ids)"),
+                {"ids": [str(identifier) for identifier in run_ids]},
+            )
+        ).all()
+    return {row[0]: row[1] for row in rows}
+
+
+def reap_settings():
+    from app.settings import Settings
+
+    return Settings(_env_file=None, database_url=database_url())
+
+
+def test_startup_reaper_fails_null_expired_and_own_instance_runs() -> None:
+    from datetime import timedelta
+
+    from sqlalchemy import text as sql_text
+
+    from app.chat.responses import reap_orphaned_runs
+
+    async def scenario() -> None:
+        factory = writer_session_factory()
+        settings = reap_settings()
+        now = datetime.now(UTC)
+        expired_other = await seed_reap_target(
+            factory, new_user("reap1"), owner=uuid.uuid4(), lease=now - timedelta(minutes=1)
+        )
+        null_lease = await seed_reap_target(
+            factory, new_user("reap2"), owner=uuid.uuid4(), lease=None
+        )
+        own_live = await seed_reap_target(
+            factory,
+            new_user("reap3"),
+            owner=settings.instance_id,
+            lease=now + timedelta(minutes=10),
+        )
+        other_live = await seed_reap_target(
+            factory, new_user("reap4"), owner=uuid.uuid4(), lease=now + timedelta(minutes=10)
+        )
+
+        async with factory() as session:
+            await reap_orphaned_runs(session=session, settings=settings)
+
+        statuses = await reap_statuses(factory, [expired_other, null_lease, own_live, other_live])
+        assert statuses[expired_other] == "failed"
+        assert statuses[null_lease] == "failed"
+        assert statuses[own_live] == "failed"
+        assert statuses[other_live] == "queued"
+
+        async with factory() as session:
+            error_code = (
+                await session.execute(
+                    sql_text("SELECT error_code FROM response_runs WHERE id = :id"),
+                    {"id": expired_other},
+                )
+            ).scalar_one()
+            events = (
+                (
+                    await session.execute(
+                        sql_text(
+                            "SELECT type FROM stream_events WHERE run_id = :id ORDER BY sequence"
+                        ),
+                        {"id": expired_other},
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        assert error_code == "server_restart"
+        assert list(events) == ["response.failed"]
+
+    asyncio.run(scenario())
+
+
+def test_periodic_reaper_only_touches_null_or_expired_leases() -> None:
+    from datetime import timedelta
+
+    from app.chat.responses import reap_expired_leases
+
+    async def scenario() -> None:
+        factory = writer_session_factory()
+        settings = reap_settings()
+        now = datetime.now(UTC)
+        this_live = await seed_reap_target(
+            factory, new_user("per1"), owner=settings.instance_id, lease=now + timedelta(minutes=10)
+        )
+        this_expired = await seed_reap_target(
+            factory, new_user("per2"), owner=settings.instance_id, lease=now - timedelta(seconds=1)
+        )
+        other_expired = await seed_reap_target(
+            factory, new_user("per3"), owner=uuid.uuid4(), lease=now - timedelta(minutes=5)
+        )
+        other_null = await seed_reap_target(
+            factory, new_user("per4"), owner=uuid.uuid4(), lease=None
+        )
+        other_live = await seed_reap_target(
+            factory, new_user("per5"), owner=uuid.uuid4(), lease=now + timedelta(minutes=10)
+        )
+
+        async with factory() as session:
+            await reap_expired_leases(session=session, settings=settings)
+
+        statuses = await reap_statuses(
+            factory, [this_live, this_expired, other_expired, other_null, other_live]
+        )
+        assert statuses[this_live] == "queued"
+        assert statuses[this_expired] == "failed"
+        assert statuses[other_expired] == "failed"
+        assert statuses[other_null] == "failed"
+        assert statuses[other_live] == "queued"
+
+    asyncio.run(scenario())
+
+
+def test_new_instance_id_waits_for_expiry_then_any_replica_fails_the_run() -> None:
+    from datetime import timedelta
+
+    from sqlalchemy import text as sql_text
+
+    from app.chat.responses import reap_expired_leases
+
+    async def scenario() -> None:
+        factory = writer_session_factory()
+        old_settings = reap_settings()
+        run_id = await seed_reap_target(
+            factory,
+            new_user("restart-new"),
+            owner=uuid.uuid4(),
+            lease=datetime.now(UTC) + timedelta(minutes=10),
+        )
+
+        async with factory() as session:
+            await reap_expired_leases(session=session, settings=old_settings)
+
+        assert (await reap_statuses(factory, [run_id]))[run_id] == "queued"
+
+        async with factory() as session:
+            async with session.begin():
+                await session.execute(
+                    sql_text(
+                        "UPDATE response_runs SET lease_expires_at = now() - interval '1 s'"
+                        " WHERE id = :id"
+                    ),
+                    {"id": run_id},
+                )
+        any_replica = reap_settings()
+        async with factory() as session:
+            await reap_expired_leases(session=session, settings=any_replica)
+
+        assert (await reap_statuses(factory, [run_id]))[run_id] == "failed"
+
+    asyncio.run(scenario())
+
+
+def test_same_instance_id_startup_reaper_fails_but_periodic_does_not() -> None:
+    from datetime import timedelta
+
+    from app.chat.responses import reap_expired_leases, reap_orphaned_runs
+
+    async def scenario() -> None:
+        factory = writer_session_factory()
+        settings = reap_settings()
+        run_id = await seed_reap_target(
+            factory,
+            new_user("restart-same"),
+            owner=settings.instance_id,
+            lease=datetime.now(UTC) + timedelta(minutes=10),
+        )
+
+        async with factory() as session:
+            await reap_expired_leases(session=session, settings=settings)
+
+        assert (await reap_statuses(factory, [run_id]))[run_id] == "queued"
+
+        async with factory() as session:
+            await reap_orphaned_runs(session=session, settings=settings)
+
+        assert (await reap_statuses(factory, [run_id]))[run_id] == "failed"
 
     asyncio.run(scenario())
