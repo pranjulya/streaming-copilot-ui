@@ -4,10 +4,12 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     Text,
@@ -15,6 +17,7 @@ from sqlalchemy import (
     func,
     text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -49,6 +52,7 @@ class Conversation(Base):
             desc("id"),
         ),
         Index("ix_conversations_user_archived_at", "user_id", "archived_at"),
+        Index("uq_conversations_id_user_id", "id", "user_id", unique=True),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid7)
@@ -132,3 +136,86 @@ class IdempotencyRecord(Base):
         DateTime(timezone=True), server_default=func.now(), default=_utcnow
     )
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+ACTIVE_RUN_STATUSES = "('queued','streaming','cancelling')"
+NONTERMINAL_RUN_STATUSES = "('queued','streaming','cancelling')"
+
+
+class ResponseRun(Base):
+    __tablename__ = "response_runs"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('queued','streaming','cancelling','completed','cancelled','failed')",
+            name="ck_response_runs_status",
+        ),
+        Index(
+            "uq_response_runs_one_active",
+            "conversation_id",
+            unique=True,
+            postgresql_where=text(f"status IN {ACTIVE_RUN_STATUSES}"),
+        ),
+        Index(
+            "ix_response_runs_user_active",
+            "user_id",
+            postgresql_where=text(f"status IN {NONTERMINAL_RUN_STATUSES}"),
+        ),
+        ForeignKeyConstraint(
+            ["conversation_id", "user_id"],
+            ["conversations.id", "conversations.user_id"],
+            ondelete="RESTRICT",
+            name="fk_response_runs_conversation_owner",
+        ),
+        ForeignKeyConstraint(
+            ["user_message_id"], ["messages.id"], ondelete="RESTRICT", name="fk_runs_user_message"
+        ),
+        ForeignKeyConstraint(
+            ["assistant_message_id"],
+            ["messages.id"],
+            ondelete="RESTRICT",
+            name="fk_runs_assistant_message",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid7)
+    conversation_id: Mapped[UUID] = mapped_column()
+    user_id: Mapped[str] = mapped_column(Text)
+    user_message_id: Mapped[UUID] = mapped_column()
+    assistant_message_id: Mapped[UUID] = mapped_column()
+    status: Mapped[str] = mapped_column(Text)
+    attempt: Mapped[int] = mapped_column(Integer)
+    provider: Mapped[str | None] = mapped_column(Text)
+    model: Mapped[str | None] = mapped_column(Text)
+    last_sequence: Mapped[int] = mapped_column(BigInteger, default=0)
+    cancel_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    owner_instance_id: Mapped[UUID | None] = mapped_column()
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    error_code: Mapped[str | None] = mapped_column(Text)
+    diagnostic_id: Mapped[str | None] = mapped_column(Text)
+    input_tokens: Mapped[int | None] = mapped_column(BigInteger)
+    output_tokens: Mapped[int | None] = mapped_column(BigInteger)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), default=_utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), default=_utcnow
+    )
+
+
+class StreamEventRecord(Base):
+    __tablename__ = "stream_events"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["run_id"], ["response_runs.id"], ondelete="RESTRICT", name="fk_stream_events_run"
+        ),
+        Index("uq_stream_events_event_id", "event_id", unique=True),
+    )
+
+    run_id: Mapped[UUID] = mapped_column(primary_key=True)
+    sequence: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    event_id: Mapped[UUID] = mapped_column()
+    type: Mapped[str] = mapped_column(Text)
+    payload: Mapped[dict[str, object]] = mapped_column(JSONB)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
