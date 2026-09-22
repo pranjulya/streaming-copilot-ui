@@ -89,3 +89,17 @@ Files appear only when their owning phase begins.
 - Provider selection is fixed per deployment.
 
 Add queue/pub-sub workers, branching, or provider selection only when a concrete product or measured operational requirement crosses these ceilings.
+
+## Deferred typed-decision extension: Jev / Laya
+
+Jev and Laya answer constrained decisions (choice, score, or probability); they are not response-generation providers. V1 continues to use xAI alone for assistant text. Do not add Jev or Laya to Phases 00–08.
+
+The first approved use is offline evaluation: score fixture-based response safety and quality in CI, with human-reviewed calibration data. A later, separately approved phase may use the same decision boundary for prompt-injection triage or sanitized failure classification.
+
+Rules for any future implementation:
+
+- Keep authorization, ownership, idempotency, cancellation, and state transitions deterministic; a model decision never authorizes an irreversible action.
+- Start with Laya locally when Apple Silicon deployment is available; optionally escalate low-confidence decisions to Jev only after project-specific calibration establishes per-action thresholds.
+- Send the minimum sanitized state needed for a decision; never send system prompts, hidden reasoning, or message content to standard telemetry.
+- Add a typed-decision adapter only when the first production use is approved. Do not introduce a second chat-model provider, provider selector, queue, or generic policy engine.
+- Prove value with a held-out labeled evaluation set, false-positive/false-negative targets, latency and cost measurements, and a feature-specific rollback path before enabling runtime enforcement.
