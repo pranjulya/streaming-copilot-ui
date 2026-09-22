@@ -1,0 +1,424 @@
+openapi: 3.1.0
+info:
+  title: Streaming Copilot V1 design snapshot
+  version: 1.0.0
+  description: Phase 00 planned API stub, not a claim that /v1 endpoints are implemented.
+    See docs/api-and-stream-contracts.md for auth cookie/CSRF, development identity
+    and complete representations.
+security:
+- BearerAuth: []
+paths:
+  /v1/conversations:
+    post:
+      summary: POST /v1/conversations
+      responses:
+        '201':
+          description: Conversation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Conversation'
+        default: &id001
+          description: Error before stream headers; see the stable problem code catalog.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      parameters:
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema: &id002
+          type: string
+          format: uuid
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+              additionalProperties: false
+    get:
+      summary: GET /v1/conversations
+      responses:
+        '200':
+          description: ConversationPage
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationPage'
+        default: *id001
+      parameters:
+      - name: cursor
+        in: query
+        schema: &id003
+          type: string
+      - name: limit
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 20
+      - name: include_archived
+        in: query
+        schema:
+          type: boolean
+          default: false
+  /v1/conversations/{id}:
+    get:
+      summary: GET /v1/conversations/{id}
+      responses:
+        '200':
+          description: ConversationSnapshot
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationSnapshot'
+        default: *id001
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema: *id002
+      - name: cursor
+        in: query
+        schema: *id003
+      - name: limit
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 50
+    patch:
+      summary: PATCH /v1/conversations/{id}
+      responses:
+        '200':
+          description: Conversation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Conversation'
+        default: *id001
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema: *id002
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema: *id002
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              properties:
+                title:
+                  type: string
+                  minLength: 1
+                  maxLength: 120
+                archived:
+                  type: boolean
+              additionalProperties: false
+  /v1/conversations/{id}/responses:
+    post:
+      summary: POST /v1/conversations/{id}/responses
+      responses:
+        '200':
+          description: Stream
+          content:
+            application/x-ndjson:
+              schema:
+                type: string
+                description: LF-delimited envelopes matching stream-events.schema.json
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-cache, no-store
+            X-Accel-Buffering:
+              schema:
+                type: string
+                const: 'no'
+        default: *id001
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema: *id002
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema: *id002
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                client_message_id: *id002
+                content:
+                  type: string
+                  minLength: 1
+                  description: Trimmed; capped by MAX_MESSAGE_CHARS
+              required:
+              - client_message_id
+              - content
+              additionalProperties: false
+  /v1/response-runs/{id}/stream:
+    post:
+      summary: POST /v1/response-runs/{id}/stream
+      responses:
+        '200':
+          description: Stream
+          content:
+            application/x-ndjson:
+              schema:
+                type: string
+                description: LF-delimited envelopes matching stream-events.schema.json
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-cache, no-store
+            X-Accel-Buffering:
+              schema:
+                type: string
+                const: 'no'
+        default: *id001
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema: *id002
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                after_sequence:
+                  type: integer
+                  minimum: 0
+              required:
+              - after_sequence
+              additionalProperties: false
+  /v1/response-runs/{id}:
+    get:
+      summary: GET /v1/response-runs/{id}
+      responses:
+        '200':
+          description: RunSnapshot
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunSnapshot'
+        default: *id001
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema: *id002
+  /v1/response-runs/{id}/cancel:
+    post:
+      summary: POST /v1/response-runs/{id}/cancel
+      responses:
+        '200':
+          description: RunSnapshot
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunSnapshot'
+        default: *id001
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema: *id002
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: {}
+              required: []
+              additionalProperties: false
+  /v1/response-runs/{id}/retry:
+    post:
+      summary: POST /v1/response-runs/{id}/retry
+      responses:
+        '200':
+          description: Stream
+          content:
+            application/x-ndjson:
+              schema:
+                type: string
+                description: LF-delimited envelopes matching stream-events.schema.json
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-cache, no-store
+            X-Accel-Buffering:
+              schema:
+                type: string
+                const: 'no'
+        default: *id001
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema: *id002
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema: *id002
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: {}
+              required: []
+              additionalProperties: false
+  /v1/messages/{user_message_id}/regenerations:
+    post:
+      summary: POST /v1/messages/{user_message_id}/regenerations
+      responses:
+        '200':
+          description: Stream
+          content:
+            application/x-ndjson:
+              schema:
+                type: string
+                description: LF-delimited envelopes matching stream-events.schema.json
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-cache, no-store
+            X-Accel-Buffering:
+              schema:
+                type: string
+                const: 'no'
+        default: *id001
+      parameters:
+      - name: user_message_id
+        in: path
+        required: true
+        schema: *id002
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema: *id002
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: {}
+              required: []
+              additionalProperties: false
+  /health/live:
+    get:
+      summary: GET /health/live
+      responses:
+        '200':
+          description: Liveness
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Liveness'
+        default: *id001
+      security: []
+  /health/ready:
+    get:
+      summary: GET /health/ready
+      responses:
+        '200':
+          description: Readiness
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Readiness'
+        default: *id001
+        '503': *id001
+      security: []
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    Conversation:
+      type: object
+      description: Phase 00 placeholder; full Conversation representation is authoritative
+        in docs/api-and-stream-contracts.md.
+    ConversationPage:
+      type: object
+      description: Phase 00 placeholder; full ConversationPage representation is authoritative
+        in docs/api-and-stream-contracts.md.
+    ConversationSnapshot:
+      type: object
+      description: Phase 00 placeholder; full ConversationSnapshot representation
+        is authoritative in docs/api-and-stream-contracts.md.
+    RunSnapshot:
+      type: object
+      description: Phase 00 placeholder; full RunSnapshot representation is authoritative
+        in docs/api-and-stream-contracts.md.
+    Liveness:
+      type: object
+      properties:
+        status:
+          const: live
+      required:
+      - status
+      additionalProperties: false
+    Readiness:
+      type: object
+      properties:
+        status:
+          const: ready
+        database:
+          const: ok
+      required:
+      - status
+      - database
+      additionalProperties: false
+    Problem:
+      type: object
+      required:
+      - type
+      - title
+      - status
+      - code
+      - diagnostic_id
+      properties:
+        type:
+          type: string
+          format: uri
+        title: *id003
+        status:
+          oneOf:
+          - type: integer
+            minimum: 400
+            maximum: 599
+          - const: not_ready
+          description: The approved health-not-ready contract uses a string; other
+            problem responses use an HTTP integer.
+        code: *id003
+        diagnostic_id: *id002

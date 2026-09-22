@@ -1,0 +1,16 @@
+.env
+.env.*
+!.env.example
+node_modules/
+.next/
+__pycache__/
+*.py[cod]
+.venv/
+postgres_data/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.tsbuildinfo
+.superpowers/
+coverage/
+*.egg-info/
