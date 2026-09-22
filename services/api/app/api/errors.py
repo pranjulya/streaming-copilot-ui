@@ -3,6 +3,7 @@ import uuid
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from sqlalchemy.exc import SQLAlchemyError
 
 PROBLEM_TYPE_BASE = "https://copilot.local/problems/"
 
@@ -42,3 +43,15 @@ def install_error_handlers(app: FastAPI) -> None:
         request: Request, exc: RequestValidationError
     ) -> JSONResponse:
         return problem_response(400, "validation_failed", "Request validation failed")
+
+    @app.exception_handler(SQLAlchemyError)
+    async def handle_database_error(request: Request, exc: SQLAlchemyError) -> JSONResponse:
+        return problem_response(503, "service_unavailable", "A required dependency is unavailable")
+
+    @app.exception_handler(OSError)
+    async def handle_connection_failure(request: Request, exc: OSError) -> JSONResponse:
+        return problem_response(503, "service_unavailable", "A required dependency is unavailable")
+
+    @app.exception_handler(Exception)
+    async def handle_unexpected_error(request: Request, exc: Exception) -> JSONResponse:
+        return problem_response(500, "internal_error", "An unexpected error occurred")

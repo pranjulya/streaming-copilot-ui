@@ -79,6 +79,12 @@ class Message(Base):
             name="ck_messages_assistant_fields",
         ),
         Index(
+            "ix_messages_conversation_created_at_id",
+            "conversation_id",
+            "created_at",
+            "id",
+        ),
+        Index(
             "uq_messages_conversation_client_message_id",
             "conversation_id",
             "client_message_id",

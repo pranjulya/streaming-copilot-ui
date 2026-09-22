@@ -667,3 +667,55 @@ def test_invalid_cursor_and_path_are_rejected() -> None:
         bad_list_cursor = client.get("/v1/conversations", params={"cursor": "!!!"})
         assert bad_list_cursor.status_code == 400
         assert bad_list_cursor.json()["code"] == "validation_failed"
+
+
+def test_message_pagination_index_exists() -> None:
+    async def scenario() -> None:
+        engine = create_async_engine(database_url())
+        try:
+            async with engine.connect() as connection:
+                rows = (
+                    await connection.execute(
+                        text("SELECT indexdef FROM pg_indexes WHERE tablename = 'messages'")
+                    )
+                ).all()
+        finally:
+            await engine.dispose()
+        definitions = [row[0] for row in rows]
+        assert any(
+            "ix_messages_conversation_created_at_id" in definition for definition in definitions
+        ), definitions
+
+    asyncio.run(scenario())
+
+
+def test_database_failure_on_v1_returns_service_unavailable_problem() -> None:
+    settings = Settings(_env_file=None, database_url="postgresql+asyncpg://a:secret@127.0.0.1:1/db")
+    app = create_app(settings)
+    with TestClient(app, headers={"X-Dev-User": "alice"}) as client:
+        response = client.get("/v1/conversations")
+    assert response.status_code == 503
+    assert response.headers["content-type"] == "application/problem+json"
+    body = response.json()
+    assert body["code"] == "service_unavailable"
+    assert body["type"] == "https://copilot.local/problems/service_unavailable"
+    assert "secret" not in response.text
+    assert "127.0.0.1" not in response.text
+
+
+def test_unexpected_error_returns_internal_error_problem() -> None:
+    settings = Settings(_env_file=None, database_url=os.environ["TEST_DATABASE_URL"])
+    app = create_app(settings)
+
+    @app.get("/v1/_explode")
+    def explode() -> None:
+        raise RuntimeError("private detail")
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.get("/v1/_explode")
+    assert response.status_code == 500
+    assert response.headers["content-type"] == "application/problem+json"
+    body = response.json()
+    assert body["code"] == "internal_error"
+    assert body["type"] == "https://copilot.local/problems/internal_error"
+    assert "private detail" not in response.text
