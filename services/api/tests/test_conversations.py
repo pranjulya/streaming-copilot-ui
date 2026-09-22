@@ -5,6 +5,7 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection, create_async_engine
 
@@ -362,3 +363,307 @@ def test_blank_dev_header_falls_back_to_configured_user() -> None:
         response = client.get("/v1/_auth-probe", headers={"X-Dev-User": "   "})
     assert response.status_code == 200
     assert response.json() == {"user_id": "configured-user"}
+
+
+def api_client(user_id: str) -> TestClient:
+    settings = Settings(_env_file=None, database_url=os.environ["TEST_DATABASE_URL"])
+    return TestClient(create_app(settings), headers={"X-Dev-User": user_id})
+
+
+def new_user(prefix: str) -> str:
+    return f"{prefix}-{uuid.uuid4().hex[:10]}"
+
+
+def create_conversation_request(
+    client: TestClient, body: dict[str, object], key: str | None = None
+) -> dict[str, object]:
+    headers = {"Idempotency-Key": key} if key is not None else {}
+    response = client.post("/v1/conversations", json=body, headers=headers)
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+def test_create_and_list_newest_first_with_opaque_cursor() -> None:
+    with api_client(new_user("list")) as client:
+        key = str(uuid.uuid4())
+        create_conversation_request(client, {"title": "first"}, key)
+        create_conversation_request(client, {"title": "second"}, str(uuid.uuid4()))
+        create_conversation_request(client, {"title": "third"}, str(uuid.uuid4()))
+
+        page_one = client.get("/v1/conversations", params={"limit": 2})
+        assert page_one.status_code == 200
+        payload_one = page_one.json()
+        assert [item["title"] for item in payload_one["items"]] == ["third", "second"]
+        assert isinstance(payload_one["next_cursor"], str)
+        assert payload_one["next_cursor"]
+
+        page_two = client.get(
+            "/v1/conversations",
+            params={"limit": 2, "cursor": payload_one["next_cursor"]},
+        )
+        assert page_two.status_code == 200
+        payload_two = page_two.json()
+        assert [item["title"] for item in payload_two["items"]] == ["first"]
+        assert payload_two["next_cursor"] is None
+
+
+def test_get_and_patch_other_users_conversation_return_404_not_403() -> None:
+    with api_client(new_user("owner")) as client:
+        conversation = create_conversation_request(client, {"title": "private"}, str(uuid.uuid4()))
+    conversation_id = conversation["id"]
+
+    with api_client(new_user("intruder")) as client:
+        fetched = client.get(f"/v1/conversations/{conversation_id}")
+        assert fetched.status_code == 404
+        assert fetched.headers["content-type"] == "application/problem+json"
+        assert fetched.json()["code"] == "not_found"
+
+        patched = client.patch(
+            f"/v1/conversations/{conversation_id}",
+            json={"title": "stolen"},
+            headers={"Idempotency-Key": str(uuid.uuid4())},
+        )
+        assert patched.status_code == 404
+        assert patched.json()["code"] == "not_found"
+
+
+def test_patch_title_archive_and_restore() -> None:
+    with api_client(new_user("patch")) as client:
+        conversation = create_conversation_request(client, {"title": "before"}, str(uuid.uuid4()))
+        conversation_id = conversation["id"]
+
+        renamed = client.patch(
+            f"/v1/conversations/{conversation_id}",
+            json={"title": "  After  "},
+            headers={"Idempotency-Key": str(uuid.uuid4())},
+        )
+        assert renamed.status_code == 200
+        assert renamed.json()["title"] == "After"
+
+        archived = client.patch(
+            f"/v1/conversations/{conversation_id}",
+            json={"archived": True},
+            headers={"Idempotency-Key": str(uuid.uuid4())},
+        )
+        assert archived.status_code == 200
+        assert archived.json()["archived_at"] is not None
+
+        default_titles = [item["title"] for item in client.get("/v1/conversations").json()["items"]]
+        assert "After" not in default_titles
+        archived_titles = [
+            item["title"]
+            for item in client.get("/v1/conversations", params={"include_archived": True}).json()[
+                "items"
+            ]
+        ]
+        assert "After" in archived_titles
+
+        restored = client.patch(
+            f"/v1/conversations/{conversation_id}",
+            json={"archived": False},
+            headers={"Idempotency-Key": str(uuid.uuid4())},
+        )
+        assert restored.status_code == 200
+        assert restored.json()["archived_at"] is None
+        default_titles = [item["title"] for item in client.get("/v1/conversations").json()["items"]]
+        assert "After" in default_titles
+
+
+def test_duplicate_idempotency_key_replays_or_conflicts() -> None:
+    with api_client(new_user("idem")) as client:
+        key = str(uuid.uuid4())
+        first = create_conversation_request(client, {"title": "once"}, key)
+        replay = create_conversation_request(client, {"title": "once"}, key)
+        assert replay["id"] == first["id"]
+
+        conflict = client.post(
+            "/v1/conversations",
+            json={"title": "different"},
+            headers={"Idempotency-Key": key},
+        )
+        assert conflict.status_code == 409
+        assert conflict.headers["content-type"] == "application/problem+json"
+        assert conflict.json()["code"] == "idempotency_key_conflict"
+
+
+def test_create_defaults_to_new_conversation_title() -> None:
+    with api_client(new_user("default")) as client:
+        conversation = create_conversation_request(client, {}, str(uuid.uuid4()))
+        assert conversation["title"] == "New conversation"
+        assert conversation["active_run_id"] is None
+        assert conversation["archived_at"] is None
+
+
+def test_list_limit_out_of_range_rejected() -> None:
+    with api_client(new_user("limit")) as client:
+        for limit in (0, 101):
+            response = client.get("/v1/conversations", params={"limit": limit})
+            assert response.status_code == 400
+            body = response.json()
+            assert body["code"] == "validation_failed"
+            assert body["type"] == "https://copilot.local/problems/validation_failed"
+
+
+def test_missing_or_invalid_idempotency_key_rejected() -> None:
+    with api_client(new_user("nokey")) as client:
+        missing = client.post("/v1/conversations", json={"title": "x"})
+        assert missing.status_code == 400
+        assert missing.json()["code"] == "validation_failed"
+
+        invalid = client.post(
+            "/v1/conversations",
+            json={"title": "x"},
+            headers={"Idempotency-Key": "not-a-uuid"},
+        )
+        assert invalid.status_code == 400
+        assert invalid.json()["code"] == "validation_failed"
+
+        conversation = create_conversation_request(client, {"title": "x"}, str(uuid.uuid4()))
+        patch_missing = client.patch(f"/v1/conversations/{conversation['id']}", json={"title": "y"})
+        assert patch_missing.status_code == 400
+        assert patch_missing.json()["code"] == "validation_failed"
+
+
+def test_patch_requires_at_least_one_valid_field() -> None:
+    with api_client(new_user("fields")) as client:
+        conversation = create_conversation_request(client, {"title": "x"}, str(uuid.uuid4()))
+        conversation_id = conversation["id"]
+        cases: list[dict[str, object]] = [
+            {},
+            {"title": "   "},
+            {"title": "x" * 121},
+            {"title": 42},
+            {"archived": "yes"},
+            {"unknown": 1},
+        ]
+        for body in cases:
+            response = client.patch(
+                f"/v1/conversations/{conversation_id}",
+                json=body,
+                headers={"Idempotency-Key": str(uuid.uuid4())},
+            )
+            assert response.status_code == 400, body
+            assert response.json()["code"] == "validation_failed"
+
+
+def test_patch_idempotency_replay_does_not_reapply() -> None:
+    with api_client(new_user("patchidem")) as client:
+        conversation = create_conversation_request(client, {"title": "x"}, str(uuid.uuid4()))
+        conversation_id = conversation["id"]
+        key = str(uuid.uuid4())
+
+        first = client.patch(
+            f"/v1/conversations/{conversation_id}",
+            json={"title": "once-patched"},
+            headers={"Idempotency-Key": key},
+        )
+        assert first.status_code == 200
+        replay = client.patch(
+            f"/v1/conversations/{conversation_id}",
+            json={"title": "once-patched"},
+            headers={"Idempotency-Key": key},
+        )
+        assert replay.status_code == 200
+        assert replay.json() == first.json()
+
+        conflict = client.patch(
+            f"/v1/conversations/{conversation_id}",
+            json={"title": "other-patch"},
+            headers={"Idempotency-Key": key},
+        )
+        assert conflict.status_code == 409
+        assert conflict.json()["code"] == "idempotency_key_conflict"
+
+
+def test_get_conversation_detail_returns_messages_oldest_first_with_cursor() -> None:
+    async def seed(conversation_id: str) -> list[str]:
+        engine = create_async_engine(database_url())
+        base = datetime.now(UTC)
+        ids = [uuid.uuid4() for _ in range(3)]
+        try:
+            async with engine.begin() as connection:
+                await connection.execute(
+                    text(
+                        "INSERT INTO messages (id, conversation_id, role, content, status,"
+                        " client_message_id, created_at, updated_at)"
+                        " VALUES (:id, :cid, 'user', 'question', 'complete', :cmid, :t, :t)"
+                    ),
+                    {
+                        "id": ids[0],
+                        "cid": conversation_id,
+                        "cmid": uuid.uuid4(),
+                        "t": base,
+                    },
+                )
+                await connection.execute(
+                    text(
+                        "INSERT INTO messages (id, conversation_id, role, content, status,"
+                        " in_reply_to_id, created_at, updated_at)"
+                        " VALUES (:id, :cid, 'assistant', 'answer v1', 'complete', :rid, :t, :t)"
+                    ),
+                    {
+                        "id": ids[1],
+                        "cid": conversation_id,
+                        "rid": ids[0],
+                        "t": base.replace(microsecond=base.microsecond + 1),
+                    },
+                )
+                await connection.execute(
+                    text(
+                        "INSERT INTO messages (id, conversation_id, role, content, status,"
+                        " in_reply_to_id, version, is_visible, created_at, updated_at)"
+                        " VALUES (:id, :cid, 'assistant', 'answer v2 hidden', 'complete', :rid, 2,"
+                        " FALSE, :t, :t)"
+                    ),
+                    {
+                        "id": ids[2],
+                        "cid": conversation_id,
+                        "rid": ids[0],
+                        "t": base.replace(microsecond=base.microsecond + 2),
+                    },
+                )
+        finally:
+            await engine.dispose()
+        return [str(message_id) for message_id in ids]
+
+    with api_client(new_user("detail")) as client:
+        conversation = create_conversation_request(client, {"title": "detail"}, str(uuid.uuid4()))
+        seeded = asyncio.run(seed(conversation["id"]))
+
+        detail = client.get(f"/v1/conversations/{conversation['id']}", params={"limit": 2})
+        assert detail.status_code == 200
+        payload = detail.json()
+        assert payload["conversation"]["id"] == conversation["id"]
+        assert payload["active_run"] is None
+        messages = payload["messages"]["items"]
+        assert [message["id"] for message in messages] == seeded[:2]
+        assert messages[0]["is_visible"] is True
+        cursor = payload["messages"]["next_cursor"]
+        assert isinstance(cursor, str) and cursor
+
+        second_page = client.get(
+            f"/v1/conversations/{conversation['id']}",
+            params={"limit": 2, "cursor": cursor},
+        )
+        assert second_page.status_code == 200
+        remaining = second_page.json()["messages"]
+        assert [message["id"] for message in remaining["items"]] == seeded[2:]
+        assert remaining["items"][0]["is_visible"] is False
+        assert remaining["next_cursor"] is None
+
+
+def test_invalid_cursor_and_path_are_rejected() -> None:
+    with api_client(new_user("badinput")) as client:
+        conversation = create_conversation_request(client, {"title": "x"}, str(uuid.uuid4()))
+
+        bad_path = client.get("/v1/conversations/not-a-uuid")
+        assert bad_path.status_code == 400
+        assert bad_path.json()["code"] == "validation_failed"
+
+        bad_cursor = client.get(f"/v1/conversations/{conversation['id']}", params={"cursor": "!!!"})
+        assert bad_cursor.status_code == 400
+        assert bad_cursor.json()["code"] == "validation_failed"
+
+        bad_list_cursor = client.get("/v1/conversations", params={"cursor": "!!!"})
+        assert bad_list_cursor.status_code == 400
+        assert bad_list_cursor.json()["code"] == "validation_failed"

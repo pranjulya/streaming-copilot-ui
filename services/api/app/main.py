@@ -2,10 +2,11 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
-from sqlalchemy.ext.asyncio import create_async_engine
 
+from app.api.conversations import router as conversations_router
 from app.api.errors import install_error_handlers
 from app.api.health import router
+from app.persistence.session import create_database_engine, create_session_factory
 from app.settings import Settings
 
 
@@ -14,13 +15,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        engine = create_async_engine(
-            config.database_url.get_secret_value(),
-            pool_pre_ping=True,
-            pool_timeout=2,
-            connect_args={"timeout": 2, "command_timeout": 2},
-        )
+        engine = create_database_engine(config.database_url.get_secret_value())
         app.state.engine = engine
+        app.state.session_factory = create_session_factory(engine)
         try:
             yield
         finally:
@@ -30,4 +27,5 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = config
     install_error_handlers(app)
     app.include_router(router)
+    app.include_router(conversations_router)
     return app

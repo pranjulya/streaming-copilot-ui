@@ -1,6 +1,7 @@
 import uuid
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 PROBLEM_TYPE_BASE = "https://copilot.local/problems/"
@@ -35,3 +36,9 @@ def install_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(AppError)
     async def handle_app_error(request: Request, exc: AppError) -> JSONResponse:
         return problem_response(exc.status_code, exc.code, exc.title, **exc.extensions)
+
+    @app.exception_handler(RequestValidationError)
+    async def handle_validation_error(
+        request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        return problem_response(400, "validation_failed", "Request validation failed")
