@@ -4,7 +4,7 @@ This directory is an execution map, not application code. Read `../Implementatio
 
 ## Approval state
 
-**BLOCKED:** phase files exist; no phase is authorized until the user reviews and explicitly approves the complete planning package.
+**APPROVED:** the user explicitly approved the full planning package and Phase 00 on 2026-09-19 at `53c1b7c`. Stop at the Phase 00 review gate before Phase 01.
 
 ## Phases
 
@@ -30,5 +30,6 @@ This directory is an execution map, not application code. Read `../Implementatio
 
 | Phase | Status | Approval evidence |
 |---:|---|---|
-| Planning | Awaiting user review | Current conversation |
-| 00–08 | Not started | None |
+| Planning | Approved | Explicit user approval, 2026-09-19, baseline `53c1b7c` |
+| 00 | Implementation under verification | Phase 00 explicitly authorized in the same conversation |
+| 01–08 | Not started | Phase 00 gate remains |

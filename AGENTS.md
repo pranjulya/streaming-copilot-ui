@@ -4,7 +4,7 @@ Project rules for any coding agent working in this repository. Do not copy the s
 
 ## Status
 
-This repo is **planning-complete, implementation-not-started**. Do **not** scaffold `apps/`, `services/`, or `contracts/` until the user **explicitly approves** the planning package in the conversation.
+The user **explicitly approved the complete planning package and Phase 00 on 2026-09-19**, at baseline `53c1b7c`. Phase 00 implementation is under verification. The scaffolding approval gate is satisfied.
 
 After approval, implement **one phase at a time** from `implementation/phase-00-foundation-and-contracts.md` onward. Stop at each phase gate.
 
