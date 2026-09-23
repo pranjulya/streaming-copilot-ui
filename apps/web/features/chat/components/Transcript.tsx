@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 
 import type { ConversationSnapshot, ConversationClient } from "../api/client";
 import { ClientError } from "../api/client";
+import { Composer } from "./Composer";
 import { MessageBubble } from "./MessageBubble";
 import { StatusText } from "./StatusText";
 
@@ -16,6 +17,7 @@ export function Transcript({
 }) {
   const [snapshot, setSnapshot] = useState<ConversationSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState("");
 
   useEffect(() => {
     let active = true;
@@ -81,6 +83,14 @@ export function Transcript({
           ))}
         </ol>
       )}
+      <Composer
+        onSubmit={(content) => {
+          setNotice(`“${content}” is ready to send; streaming arrives in the next phase.`);
+        }}
+      />
+      <p className="composer-notice" role="status">
+        {notice}
+      </p>
     </section>
   );
 }
