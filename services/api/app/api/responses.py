@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.api import rfc3339
 from app.api.auth import Actor, require_actor
+from app.api.bounds import enforce_send_rate
 from app.api.errors import AppError
 from app.api.requests import fingerprint, read_json_body, require_idempotency_key
 from app.chat.event_writer import follow_events
@@ -134,6 +135,7 @@ async def create_response_and_stream(
     actor: Actor = Depends(require_actor),
 ) -> StreamingResponse:
     raw_body, body = await read_json_body(request, {"client_message_id", "content"})
+    enforce_send_rate(request, actor.user_id)
     settings: Settings = request.app.state.settings
     cmd = CreateResponse(
         conversation_id=conversation_id,
@@ -166,6 +168,7 @@ async def retry_response_run(
     actor: Actor = Depends(require_actor),
 ) -> StreamingResponse:
     raw_body, _ = await read_json_body(request, set())
+    enforce_send_rate(request, actor.user_id)
     settings: Settings = request.app.state.settings
     async with request.app.state.session_factory() as session:
         run = await retry_run(
@@ -186,6 +189,7 @@ async def regenerate_message_and_stream(
     actor: Actor = Depends(require_actor),
 ) -> StreamingResponse:
     raw_body, _ = await read_json_body(request, set())
+    enforce_send_rate(request, actor.user_id)
     settings: Settings = request.app.state.settings
     async with request.app.state.session_factory() as session:
         run = await regenerate_message(

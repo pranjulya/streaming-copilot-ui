@@ -9,15 +9,29 @@ PROBLEM_TYPE_BASE = "https://copilot.local/problems/"
 
 
 class AppError(Exception):
-    def __init__(self, status_code: int, code: str, title: str, **extensions: object) -> None:
+    def __init__(
+        self,
+        status_code: int,
+        code: str,
+        title: str,
+        headers: dict[str, str] | None = None,
+        **extensions: object,
+    ) -> None:
         super().__init__(code)
         self.status_code = status_code
         self.code = code
         self.title = title
+        self.headers = headers or {}
         self.extensions = extensions
 
 
-def problem_response(status_code: int, code: str, title: str, **extensions: object) -> JSONResponse:
+def problem_response(
+    status_code: int,
+    code: str,
+    title: str,
+    headers: dict[str, str] | None = None,
+    **extensions: object,
+) -> JSONResponse:
     content: dict[str, object] = {
         "type": f"{PROBLEM_TYPE_BASE}{code}",
         "title": title,
@@ -30,13 +44,20 @@ def problem_response(status_code: int, code: str, title: str, **extensions: obje
         status_code=status_code,
         media_type="application/problem+json",
         content=content,
+        headers=headers,
     )
 
 
 def install_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(AppError)
     async def handle_app_error(request: Request, exc: AppError) -> JSONResponse:
-        return problem_response(exc.status_code, exc.code, exc.title, **exc.extensions)
+        return problem_response(
+            exc.status_code,
+            exc.code,
+            exc.title,
+            headers=exc.headers,
+            **exc.extensions,
+        )
 
     @app.exception_handler(RequestValidationError)
     async def handle_validation_error(
