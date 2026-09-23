@@ -31,6 +31,7 @@ This directory is an execution map, not application code. Read `../Implementatio
 | Phase | Status | Approval evidence |
 |---:|---|---|
 | Planning | Approved | Explicit user approval, 2026-09-19, baseline `53c1b7c` |
-| 00 | Implementation under verification | Phase 00 explicitly authorized in the same conversation |
-| 01 | Implemented; pending gate review | TDD complete on `phase-01-persistence-and-conversations` (3 phase-scoped commits) |
-| 02–08 | Not started | Phase 01 gate remains |
+| 00 | Approved and merged | Phase 00 PR merged |
+| 01 | Approved and merged | PR #4 merged into main |
+| 02 | Implemented; pending gate review | TDD complete on `phase-02-response-lifecycle` (6 phase-scoped commits) |
+| 03–08 | Not started | Phase 02 gate remains |
