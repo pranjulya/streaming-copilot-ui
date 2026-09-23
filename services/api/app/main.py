@@ -51,6 +51,26 @@ async def _periodic_lease_reaper(app: FastAPI, config: Settings) -> None:
             logger.exception("periodic lease reaper tick failed")
 
 
+def install_cors(app: FastAPI, config: Settings) -> None:
+    from fastapi.middleware.cors import CORSMiddleware
+
+    origins = [item.strip() for item in config.allowed_origins.split(",") if item.strip()]
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=origins,
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "PATCH", "OPTIONS"],
+        allow_headers=[
+            "Authorization",
+            "Content-Type",
+            "Idempotency-Key",
+            "X-CSRF-Token",
+            "X-Dev-User",
+        ],
+        expose_headers=["X-Request-ID"],
+    )
+
+
 def create_app(settings: Settings | None = None, provider: LlmProvider | None = None) -> FastAPI:
     config = settings if settings is not None else Settings()
 
@@ -87,6 +107,7 @@ def create_app(settings: Settings | None = None, provider: LlmProvider | None = 
     app.state.settings = config
     install_error_handlers(app)
     install_observability(app, config)
+    install_cors(app, config)
     app.include_router(router)
     app.include_router(conversations_router)
     app.include_router(runs_router)
