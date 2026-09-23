@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager, suppress
 from fastapi import FastAPI
 
 from app.api.conversations import router as conversations_router
+from app.api.dev import router as dev_router
 from app.api.errors import install_error_handlers
 from app.api.health import router
 from app.api.responses import router as responses_router
@@ -96,4 +97,5 @@ def create_app(settings: Settings | None = None, provider: LlmProvider | None = 
     app.include_router(conversations_router)
     app.include_router(runs_router)
     app.include_router(responses_router)
+    app.include_router(dev_router)
     return app
