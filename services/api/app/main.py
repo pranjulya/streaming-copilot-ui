@@ -1,10 +1,10 @@
 import asyncio
 import json
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
 
 from app.api.conversations import router as conversations_router
 from app.api.dev import router as dev_router
@@ -86,6 +86,7 @@ def create_app(settings: Settings | None = None, provider: LlmProvider | None = 
     app = FastAPI(title="Streaming Copilot API", version="0.1.0", lifespan=lifespan)
     app.state.settings = config
     install_error_handlers(app)
+    install_observability(app, config)
     app.include_router(router)
     app.include_router(conversations_router)
     app.include_router(runs_router)
@@ -93,3 +94,60 @@ def create_app(settings: Settings | None = None, provider: LlmProvider | None = 
     if config.app_env == "development":
         app.include_router(dev_router)
     return app
+
+
+def install_observability(app: FastAPI, config: Settings) -> None:
+    from starlette.middleware.base import BaseHTTPMiddleware
+
+    from app.observability.logging import (
+        configure_logging,
+        new_request_id,
+        new_trace_id,
+        request_id_var,
+        trace_id_var,
+    )
+    from app.observability.metrics import (
+        ACCEPT_LATENCY_SECONDS,
+        HTTP_REQUESTS_TOTAL,
+        METRICS_CONTENT_TYPE,
+        render_metrics,
+    )
+
+    configure_logging(config.log_level)
+
+    @app.middleware("http")
+    async def correlate_requests(
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
+        request_id = request.headers.get("x-request-id") or new_request_id()
+        trace_id = new_trace_id()
+        request_id_var.set(request_id)
+        trace_id_var.set(trace_id)
+        request.state.request_id = request_id
+        request.state.trace_id = trace_id
+        started = asyncio.get_running_loop().time()
+        try:
+            response = await call_next(request)
+        finally:
+            elapsed = asyncio.get_running_loop().time() - started
+            ACCEPT_LATENCY_SECONDS.labels(endpoint=_endpoint_label(request)).observe(elapsed)
+        response.headers["X-Request-ID"] = request_id
+        HTTP_REQUESTS_TOTAL.labels(
+            endpoint=_endpoint_label(request),
+            status=str(response.status_code),
+            code="",
+        ).inc()
+        return response
+
+    @app.get("/metrics", include_in_schema=False)
+    async def metrics_endpoint() -> Response:
+        return Response(content=render_metrics(), media_type=METRICS_CONTENT_TYPE)
+
+    del BaseHTTPMiddleware
+
+
+def _endpoint_label(request: Request) -> str:
+    route = request.scope.get("route")
+    path = getattr(route, "path", None) or request.url.path
+    return str(path)

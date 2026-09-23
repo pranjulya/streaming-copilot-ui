@@ -8,6 +8,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api import rfc3339
 from app.api.errors import AppError
 from app.chat.state_machine import assert_transition, is_terminal
+from app.observability.metrics import (
+    EVENTS_EMITTED_TOTAL,
+    RUNS_TERMINAL_TOTAL,
+    TOKENS_TOTAL,
+)
 from app.persistence.models import (
     Conversation,
     Message,
@@ -111,6 +116,7 @@ async def _insert_event(
     session.add(record)
     run.last_sequence = sequence
     run.updated_at = now
+    EVENTS_EMITTED_TOTAL.labels(type=event_type).inc()
     return _envelope(record, run.conversation_id)
 
 
@@ -235,8 +241,16 @@ async def complete_run(
         usage = result.usage or Usage(0, 0)
         run.input_tokens = usage.input_tokens
         run.output_tokens = usage.output_tokens
+        if result.usage is not None:
+            TOKENS_TOTAL.labels(direction="input", model=run.model or "").inc(
+                result.usage.input_tokens
+            )
+            TOKENS_TOTAL.labels(direction="output", model=run.model or "").inc(
+                result.usage.output_tokens
+            )
         conversation = await _load_conversation(session, run.conversation_id)
         conversation.updated_at = now
+        RUNS_TERMINAL_TOTAL.labels(status="completed", error_code="", model=run.model or "").inc()
         message_data: dict[str, object] = {
             "message_id": str(run.assistant_message_id),
             "content": result.content,
@@ -270,6 +284,9 @@ async def fail_locked_run(
     run.updated_at = now
     conversation = await _load_conversation(session, run.conversation_id)
     conversation.updated_at = now
+    RUNS_TERMINAL_TOTAL.labels(
+        status="failed", error_code=failure.code, model=run.model or ""
+    ).inc()
     data: dict[str, object] = {
         "code": failure.code,
         "message": failure.message,
@@ -320,6 +337,7 @@ async def cancel_run(run_id: UUID, *, session: AsyncSession) -> StreamEvent:
         run.updated_at = now
         conversation = await _load_conversation(session, run.conversation_id)
         conversation.updated_at = now
+        RUNS_TERMINAL_TOTAL.labels(status="cancelled", error_code="", model=run.model or "").inc()
         data: dict[str, object] = {
             "reason": "user_requested",
             "partial_content_retained": bool(message.content),

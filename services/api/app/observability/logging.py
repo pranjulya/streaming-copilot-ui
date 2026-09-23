@@ -49,11 +49,15 @@ class JsonFormatter(logging.Formatter):
 
 
 def configure_logging(level: str = "INFO") -> None:
+    root = logging.getLogger()
+    if any(getattr(handler, "_copilot_handler", False) for handler in root.handlers):
+        root.setLevel(level)
+        return
     handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(JsonFormatter())
     handler.addFilter(CorrelationFilter())
-    root = logging.getLogger()
-    root.handlers = [handler]
+    handler._copilot_handler = True  # type: ignore[attr-defined]
+    root.addHandler(handler)
     root.setLevel(level)
 
 
