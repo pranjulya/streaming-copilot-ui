@@ -233,6 +233,7 @@ export function ConversationList({ client }: { client: ConversationClient }) {
       aria-label="Conversations"
       ref={listRef}
     >
+      <h1 className="list-title">Conversations</h1>
       <div className="list-toolbar">
         <button type="button" onClick={() => void createConversation()}>
           New conversation

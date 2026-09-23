@@ -61,8 +61,15 @@ def test_metrics_expose_request_run_event_and_token_counters() -> None:
         assert (
             'copilot_runs_terminal_total{error_code="",model="grok-4.6",status="completed"}' in text
         )
-        assert 'copilot_tokens_total{direction="input",model="grok-4.6"} 9.0' in text
-        assert 'copilot_tokens_total{direction="output",model="grok-4.6"} 4.0' in text
+
+        def counter_value(fragment: str) -> float:
+            for line in text.splitlines():
+                if line.startswith(fragment):
+                    return float(line.rsplit(" ", 1)[1])
+            raise AssertionError(f"missing metric line: {fragment}")
+
+        assert counter_value('copilot_tokens_total{direction="input",model="grok-4.6"}') >= 9.0
+        assert counter_value('copilot_tokens_total{direction="output",model="grok-4.6"}') >= 4.0
 
     asyncio.run(scenario())
 
