@@ -57,3 +57,27 @@ class FakeProvider:
         if self.fail_after is not None and self.fail_after >= len(self.deltas):
             raise ProviderStreamError(self.failure)
         yield ProviderDelta(finish_reason=self.finish_reason, usage=self.usage)
+
+
+class PlannedFakeProvider:
+    """Cycles through scripted steps per stream call; the last step repeats.
+
+    Used by local/e2e runs through the FAKE_PROVIDER_PLAN environment variable so
+    failure-injection journeys (retry, reconnect, cancel races) are deterministic.
+    """
+
+    def __init__(self, steps: Sequence[FakeProvider]) -> None:
+        if not steps:
+            raise ValueError("PlannedFakeProvider needs at least one step")
+        self._steps = list(steps)
+        self._calls = 0
+
+    def stream(
+        self,
+        messages: Sequence[ProviderMessage],
+        *,
+        signal: CancelSignal,
+    ) -> AsyncIterator[ProviderDelta]:
+        step = self._steps[min(self._calls, len(self._steps) - 1)]
+        self._calls += 1
+        return step.stream(messages, signal=signal)

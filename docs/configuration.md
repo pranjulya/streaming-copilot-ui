@@ -61,6 +61,7 @@ Prefix `COPILOT_` is unused; names below are canonical. Web bundles receive **on
 | `EVENT_RETENTION_HOURS` | no | `24` | no | Compact terminal runs after this |
 | `IDEMPOTENCY_TTL_HOURS` | no | `24` | no | Key retention after run terminal |
 | `NEXT_PUBLIC_API_BASE` | no | `""` | no | Empty = same origin |
+| `FAKE_PROVIDER_PLAN` | no | unset | no | Development-only JSON script for the fake provider (e2e failure injection; ignored outside `development`/keyless) |
 
 Startup **fails** if `APP_ENV` is not `development` and `XAI_API_KEY`, `DATABASE_URL`, or JWT settings are missing. Startup **fails** if `APP_ENV!=development` and a development identity adapter is configured.
 
