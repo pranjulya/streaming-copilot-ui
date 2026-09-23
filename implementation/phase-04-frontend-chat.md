@@ -16,33 +16,33 @@
 
 ### Task 1: Typed JSON client
 
-- [ ] Implement list/get/create/patch from LLD client signatures (non-streaming).
-- [ ] Map 401/404/409/429 to `ClientError`.
-- [ ] MSW or fetch mock tests. Commit `feat: add conversation http client`.
+- [x] Implement list/get/create/patch from LLD client signatures (non-streaming).
+- [x] Map 401/404/409/429 to `ClientError`.
+- [x] MSW or fetch mock tests. Commit `feat: add conversation http client`.
 
 ### Task 2: List and transcript without streaming
 
-- [ ] Routes: `/` list, `/c/[id]` transcript.
-- [ ] Empty state, loading, error summary.
-- [ ] Archive requires confirm; undo via `archived: false`.
-- [ ] Rename inline.
-- [ ] Commit `feat: render conversation list and history`.
+- [x] Routes: `/` list, `/c/[id]` transcript.
+- [x] Empty state, loading, error summary.
+- [x] Archive requires confirm; undo via `archived: false`.
+- [x] Rename inline.
+- [x] Commit `feat: render conversation list and history`.
 
 ### Task 3: Composer and a11y
 
-- [ ] Enter submits; Shift+Enter newline; button available.
-- [ ] Composer **does not call a write API** in this phase (there is no `POST /v1/messages`). Submit may no-op or dispatch an optimistic local action that Phase 05 will replace with `startResponse`.
-- [ ] Polite live region exists in the DOM (can stay empty until stream states exist).
-- [ ] `prefers-reduced-motion` disables token animation CSS.
-- [ ] Semantic list for messages; no `dangerouslySetInnerHTML`.
-- [ ] axe-core unit checks on Transcript + Composer.
-- [ ] Commit `feat: add accessible composer and chat shell`.
+- [x] Enter submits; Shift+Enter newline; button available.
+- [x] Composer **does not call a write API** in this phase (there is no `POST /v1/messages`). Submit may no-op or dispatch an optimistic local action that Phase 05 will replace with `startResponse`.
+- [x] Polite live region exists in the DOM (can stay empty until stream states exist).
+- [x] `prefers-reduced-motion` disables token animation CSS.
+- [x] Semantic list for messages; no `dangerouslySetInnerHTML`.
+- [x] axe-core unit checks on Transcript + Composer.
+- [x] Commit `feat: add accessible composer and chat shell`.
 
 ### Task 4: Sanitized Markdown
 
-- [ ] `react-markdown` + `rehype-sanitize`.
-- [ ] XSS corpus: `<script>`, `javascript:` links, raw HTML — not executed.
-- [ ] Commit `feat: sanitize assistant markdown`.
+- [x] `react-markdown` + `rehype-sanitize`.
+- [x] XSS corpus: `<script>`, `javascript:` links, raw HTML — not executed.
+- [x] Commit `feat: sanitize assistant markdown`.
 
 ## Stop gate
 
