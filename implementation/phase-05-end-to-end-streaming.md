@@ -20,9 +20,9 @@
 async function* parseNdjson(body: ReadableStream<Uint8Array>, signal: AbortSignal): AsyncGenerator<ParseResult>
 ```
 
-- [ ] Tests with `TextEncoder` chunks: one event split in three; two events in one chunk; multibyte `é` split; supplementary-plane `👍` in a delta; `content_index` via `Array.from(content).length`; CRLF tolerance; empty lines ignored; invalid JSON → `invalid`; abort releases reader; unknown type yields event for reducer to ignore; unsupported major version → invalid/protocol.
-- [ ] Implement with one `TextDecoder({ stream: true })` and carry buffer.
-- [ ] Commit `feat: parse ndjson with streaming utf-8`.
+- [x] Tests with `TextEncoder` chunks: one event split in three; two events in one chunk; multibyte `é` split; supplementary-plane `👍` in a delta; `content_index` via `Array.from(content).length`; CRLF tolerance; empty lines ignored; invalid JSON → `invalid`; abort releases reader; unknown type yields event for reducer to ignore; unsupported major version → invalid/protocol.
+- [x] Implement with one `TextDecoder({ stream: true })` and carry buffer.
+- [x] Commit `feat: parse ndjson with streaming utf-8`.
 
 ### Task 2: Reducer
 
@@ -30,29 +30,29 @@ async function* parseNdjson(body: ReadableStream<Uint8Array>, signal: AbortSigna
 function chatReducer(state: ChatState, action: ChatAction): ChatState
 ```
 
-- [ ] Optimistic turn then `response.started` maps IDs.
-- [ ] Duplicate sequence ignored; gap does not append (sets reconciling).
-- [ ] `content_index` mismatch → reconciling.
-- [ ] `message.completed` replaces accumulation.
-- [ ] Unknown type: no state change.
-- [ ] `response.snapshot` replaces content and `lastSequence`.
-- [ ] Heartbeat ignored.
-- [ ] Navigation does not clear another conversation’s run state.
-- [ ] Commit `feat: add deterministic chat reducer`.
+- [x] Optimistic turn then `response.started` maps IDs.
+- [x] Duplicate sequence ignored; gap does not append (sets reconciling).
+- [x] `content_index` mismatch → reconciling.
+- [x] `message.completed` replaces accumulation.
+- [x] Unknown type: no state change.
+- [x] `response.snapshot` replaces content and `lastSequence`.
+- [x] Heartbeat ignored.
+- [x] Navigation does not clear another conversation’s run state.
+- [x] Commit `feat: add deterministic chat reducer`.
 
 ### Task 3: Wire startResponse to UI
 
-- [ ] Generate `client_message_id` and `Idempotency-Key` before fetch.
-- [ ] POST stream, parse, dispatch.
-- [ ] Disable proxy buffering is server-side already.
-- [ ] Commit `feat: stream assistant deltas in the transcript`.
+- [x] Generate `client_message_id` and `Idempotency-Key` before fetch.
+- [x] POST stream, parse, dispatch.
+- [x] Disable proxy buffering is server-side already.
+- [x] Commit `feat: stream assistant deltas in the transcript`.
 
 ### Task 4: Playwright complete journey
 
-- [ ] FakeProvider in API test config.
-- [ ] New conversation → send “Explain backpressure…” → deltas appear → reload → same canonical text and IDs.
-- [ ] Split-chunk covered at unit level; e2e asserts visible final string.
-- [ ] Commit `test: e2e streamed completion and reload`.
+- [x] FakeProvider in API test config.
+- [x] New conversation → send “Explain backpressure…” → deltas appear → reload → same canonical text and IDs.
+- [x] Split-chunk covered at unit level; e2e asserts visible final string.
+- [x] Commit `test: e2e streamed completion and reload`.
 
 ## Stop gate
 

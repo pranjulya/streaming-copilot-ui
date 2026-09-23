@@ -35,5 +35,6 @@ This directory is an execution map, not application code. Read `../Implementatio
 | 01 | Approved and merged | PR #4 merged into main |
 | 02 | Implemented; PR open | `phase-02-response-lifecycle` |
 | 03 | Implemented; PR open | `phase-03-provider-streaming` |
-| 04 | Implemented; pending gate review | `phase-04-frontend-chat` |
-| 05–08 | Not started | Phase 04 gate remains |
+| 04 | Implemented; PR open | `phase-04-frontend-chat` |
+| 05 | Implemented; pending gate review | `phase-05-end-to-end-streaming` |
+| 06–08 | Not started | Phase 05 gate remains |
