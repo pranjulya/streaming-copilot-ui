@@ -1,6 +1,8 @@
 import asyncio
+import itertools
 import os
 import uuid
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -17,7 +19,7 @@ def context_settings(**overrides: object):
     return Settings(_env_file=None, database_url=database_url(), **overrides)  # type: ignore[arg-type]
 
 
-_ORDER = __import__("itertools").count()
+_ORDER = itertools.count()
 
 
 async def seed_message(
@@ -195,5 +197,313 @@ def test_context_reports_dropped_count_without_content_in_logs(caplog) -> None:
                 await build_context(session, conversation_id, settings=settings)
         assert "dropped" in caplog.text.lower()
         assert secret not in caplog.text
+
+    asyncio.run(scenario())
+
+
+def supervisor_settings(**overrides: object):
+    values: dict[str, object] = {
+        "lease_seconds": 5,
+        "lease_renew_seconds": 1,
+        "provider_idle_timeout_seconds": 2,
+        "generation_timeout_seconds": 30,
+        "delta_flush_ms": 10,
+        "delta_flush_chars": 1000,
+        "max_output_chars": 100000,
+    }
+    values.update(overrides)
+    return context_settings(**values)
+
+
+async def seed_supervised_run(user: str, *, instance_id, status: str = "queued"):
+    from datetime import UTC, datetime, timedelta
+
+    from tests.support import seed_messages, seed_run
+
+    factory = session_factory()
+    async with factory() as session:
+        async with session.begin():
+            conversation_id = await seed_conversation(session, user)
+            user_message_id, assistant_message_id = await seed_messages(session, conversation_id)
+            run_id = await seed_run(
+                session,
+                conversation_id,
+                user,
+                user_message_id,
+                assistant_message_id,
+                status=status,
+                owner_instance_id=instance_id,
+                lease_expires_at=datetime.now(UTC) + timedelta(seconds=1),
+            )
+    return run_id, conversation_id, assistant_message_id
+
+
+async def run_state(run_id: uuid.UUID) -> tuple[str, str | None]:
+    from sqlalchemy import text
+
+    factory = session_factory()
+    async with factory() as session:
+        row = (
+            await session.execute(
+                text("SELECT status, error_code FROM response_runs WHERE id = :id"),
+                {"id": run_id},
+            )
+        ).one()
+    return row[0], row[1]
+
+
+async def wait_terminal(run_id: uuid.UUID, *, wait_seconds: float = 10.0) -> str:
+    deadline = asyncio.get_running_loop().time() + wait_seconds
+    while asyncio.get_running_loop().time() < deadline:
+        status, _ = await run_state(run_id)
+        if status in ("completed", "cancelled", "failed"):
+            return status
+        await asyncio.sleep(0.02)
+    raise AssertionError(f"run {run_id} did not reach a terminal state")
+
+
+async def event_types(run_id: uuid.UUID) -> list[str]:
+    from sqlalchemy import text
+
+    factory = session_factory()
+    async with factory() as session:
+        rows = (
+            await session.execute(
+                text("SELECT type FROM stream_events WHERE run_id = :id ORDER BY sequence"),
+                {"id": run_id},
+            )
+        ).scalars()
+    return list(rows)
+
+
+async def assistant_content(assistant_message_id: uuid.UUID) -> tuple[str, str]:
+    from sqlalchemy import text
+
+    factory = session_factory()
+    async with factory() as session:
+        row = (
+            await session.execute(
+                text("SELECT content, status FROM messages WHERE id = :id"),
+                {"id": assistant_message_id},
+            )
+        ).one()
+    return row[0], row[1]
+
+
+def make_supervisor(provider, settings):
+    from app.chat.supervisor import GenerationSupervisor
+    from tests.test_retry_regenerate import writer_factory
+
+    return GenerationSupervisor(
+        session_factory=writer_factory(), provider=provider, settings=settings
+    )
+
+
+def test_supervisor_start_renews_existing_lease_and_refuses_null_lease() -> None:
+    from sqlalchemy import text
+
+    from app.providers.fake import FakeProvider
+
+    async def scenario() -> None:
+        settings = supervisor_settings(lease_seconds=60)
+        run_id, _, _ = await seed_supervised_run(
+            new_user("sup-lease"), instance_id=settings.instance_id
+        )
+        supervisor = make_supervisor(FakeProvider(deltas=["slow"], delay_seconds=5), settings)
+        try:
+            await supervisor.start(run_id)
+            factory = session_factory()
+            async with factory() as session:
+                lease = (
+                    await session.execute(
+                        text("SELECT lease_expires_at FROM response_runs WHERE id = :id"),
+                        {"id": run_id},
+                    )
+                ).scalar_one()
+            assert lease > datetime.now(UTC) + timedelta(seconds=30)
+
+            null_run, _, _ = await seed_supervised_run(new_user("sup-null"), instance_id=None)
+            async with factory() as session:
+                await session.execute(
+                    text(
+                        "UPDATE response_runs SET owner_instance_id = NULL,"
+                        " lease_expires_at = NULL WHERE id = :id"
+                    ),
+                    {"id": null_run},
+                )
+            with pytest.raises(RuntimeError):
+                await supervisor.start(null_run)
+            status, _ = await run_state(null_run)
+            assert status == "queued"
+        finally:
+            await supervisor.shutdown(0.05)
+
+    asyncio.run(scenario())
+
+
+def test_supervisor_completes_run_and_persists_events() -> None:
+    from app.chat.event_writer import Usage
+    from app.providers.fake import FakeProvider
+
+    async def scenario() -> None:
+        settings = supervisor_settings()
+        run_id, _, assistant_id = await seed_supervised_run(
+            new_user("sup-complete"), instance_id=settings.instance_id
+        )
+        supervisor = make_supervisor(
+            FakeProvider(deltas=["Back", "pressure"], finish_reason="stop", usage=Usage(3, 2)),
+            settings,
+        )
+        try:
+            await supervisor.start(run_id)
+            assert await wait_terminal(run_id) == "completed"
+        finally:
+            await supervisor.shutdown(0.05)
+        content, message_status = await assistant_content(assistant_id)
+        assert content == "Backpressure"
+        assert message_status == "complete"
+        types = await event_types(run_id)
+        assert types[0] == "response.started"
+        assert types[-2:] == ["message.completed", "response.completed"]
+        assert "message.delta" in types
+
+    asyncio.run(scenario())
+
+
+def test_supervisor_fails_run_on_provider_error_keeping_partial() -> None:
+    from app.providers.fake import FakeProvider
+    from app.providers.protocol import ProviderError
+
+    async def scenario() -> None:
+        settings = supervisor_settings()
+        run_id, _, assistant_id = await seed_supervised_run(
+            new_user("sup-fail"), instance_id=settings.instance_id
+        )
+        supervisor = make_supervisor(
+            FakeProvider(
+                deltas=["partial-answer"],
+                fail_after=1,
+                failure=ProviderError(code="provider_unavailable", message="down"),
+            ),
+            settings,
+        )
+        try:
+            await supervisor.start(run_id)
+            assert await wait_terminal(run_id) == "failed"
+        finally:
+            await supervisor.shutdown(0.05)
+        status, error_code = await run_state(run_id)
+        assert status == "failed"
+        assert error_code == "provider_unavailable"
+        content, message_status = await assistant_content(assistant_id)
+        assert content == "partial-answer"
+        assert message_status == "failed"
+        assert await event_types(run_id) == ["response.started", "message.delta", "response.failed"]
+
+    asyncio.run(scenario())
+
+
+def test_supervisor_enforces_output_limit() -> None:
+    from app.providers.fake import FakeProvider
+
+    async def scenario() -> None:
+        settings = supervisor_settings(max_output_chars=12, delta_flush_chars=5)
+        run_id, _, _ = await seed_supervised_run(
+            new_user("sup-limit"), instance_id=settings.instance_id
+        )
+        supervisor = make_supervisor(FakeProvider(deltas=["12345", "67890", "abcde"]), settings)
+        try:
+            await supervisor.start(run_id)
+            assert await wait_terminal(run_id) == "failed"
+        finally:
+            await supervisor.shutdown(0.05)
+        _, error_code = await run_state(run_id)
+        assert error_code == "output_limit_exceeded"
+
+    asyncio.run(scenario())
+
+
+def test_supervisor_enforces_idle_timeout_on_hanging_provider() -> None:
+    from app.providers.fake import FakeProvider
+
+    async def scenario() -> None:
+        settings = supervisor_settings(provider_idle_timeout_seconds=1)
+        run_id, _, _ = await seed_supervised_run(
+            new_user("sup-hang"), instance_id=settings.instance_id
+        )
+        supervisor = make_supervisor(FakeProvider(deltas=["x"], hang_after=0), settings)
+        try:
+            await supervisor.start(run_id)
+            assert await wait_terminal(run_id) == "failed"
+        finally:
+            await supervisor.shutdown(0.05)
+        _, error_code = await run_state(run_id)
+        assert error_code == "provider_timeout"
+
+    asyncio.run(scenario())
+
+
+def test_supervisor_observes_cancel_request_and_commits_cancelled() -> None:
+    from sqlalchemy import text
+
+    from app.providers.fake import FakeProvider
+
+    async def scenario() -> None:
+        settings = supervisor_settings()
+        run_id, _, assistant_id = await seed_supervised_run(
+            new_user("sup-cancel"), instance_id=settings.instance_id
+        )
+        supervisor = make_supervisor(
+            FakeProvider(deltas=["x"] * 5000, delay_seconds=0.01), settings
+        )
+        factory = session_factory()
+        try:
+            await supervisor.start(run_id)
+            deadline = asyncio.get_running_loop().time() + 5
+            while asyncio.get_running_loop().time() < deadline:
+                if "message.delta" in await event_types(run_id):
+                    break
+                await asyncio.sleep(0.02)
+            async with factory() as session:
+                async with session.begin():
+                    await session.execute(
+                        text("UPDATE response_runs SET cancel_requested_at = now() WHERE id = :id"),
+                        {"id": run_id},
+                    )
+            assert await wait_terminal(run_id) == "cancelled"
+        finally:
+            await supervisor.shutdown(0.05)
+        content, message_status = await assistant_content(assistant_id)
+        assert content
+        assert message_status == "cancelled"
+        types = await event_types(run_id)
+        assert types[-1] == "response.cancelled"
+        assert "message.completed" not in types
+
+    asyncio.run(scenario())
+
+
+def test_supervisor_shutdown_fails_remaining_owned_runs() -> None:
+    from app.providers.fake import FakeProvider
+
+    async def scenario() -> None:
+        settings = supervisor_settings()
+        run_id, _, _ = await seed_supervised_run(
+            new_user("sup-shutdown"), instance_id=settings.instance_id
+        )
+        supervisor = make_supervisor(
+            FakeProvider(deltas=["x"] * 5000, delay_seconds=0.01), settings
+        )
+        await supervisor.start(run_id)
+        deadline = asyncio.get_running_loop().time() + 5
+        while asyncio.get_running_loop().time() < deadline:
+            if "response.started" in await event_types(run_id):
+                break
+            await asyncio.sleep(0.02)
+        await supervisor.shutdown(0.1)
+        status, error_code = await run_state(run_id)
+        assert status == "failed"
+        assert error_code == "server_restart"
+        assert (await event_types(run_id))[-1] == "response.failed"
 
     asyncio.run(scenario())
