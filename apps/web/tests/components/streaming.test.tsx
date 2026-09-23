@@ -240,10 +240,10 @@ describe("Transcript streaming", () => {
       vi.fn().mockResolvedValue(
         new Response(
           JSON.stringify({
-            type: "https://copilot.local/problems/conversation_busy",
-            title: "Conversation already has an active response",
+            type: "https://copilot.local/problems/invalid_run_state",
+            title: "Retry is only allowed from failed or cancelled runs",
             status: 409,
-            code: "conversation_busy",
+            code: "invalid_run_state",
           }),
           {
             status: 409,
@@ -255,7 +255,7 @@ describe("Transcript streaming", () => {
     render(<Transcript client={client} conversationId={CONVERSATION_ID} />);
     await screen.findByRole("heading", { name: "Explain backpressure" });
     await userEvent.type(screen.getByLabelText("Message"), "again{Enter}");
-    expect(await screen.findByText(/conversation_busy/)).toBeTruthy();
+    expect(await screen.findByText(/was not stored/)).toBeTruthy();
     expect(
       (screen.getByLabelText("Message") as HTMLTextAreaElement).value,
     ).toBe("again");
@@ -302,5 +302,68 @@ describe("Transcript streaming", () => {
         screen.queryByRole("heading", { name: "Explain backpressure" }),
       ).toBeNull(),
     );
+  });
+
+
+  test("a busy conversation follows the active run instead of duplicating", async () => {
+    const client = {
+      getConversation: vi
+        .fn()
+        .mockResolvedValueOnce(snapshotWith(null))
+        .mockResolvedValue(snapshotWith("canonical from active run")),
+    } as unknown as ConversationClient;
+    const fetchImpl = vi.fn().mockImplementation((url: string) => {
+      if (String(url).includes("/responses")) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              type: "https://copilot.local/problems/conversation_busy",
+              title: "busy",
+              status: 409,
+              code: "conversation_busy",
+              active_run_id: "active-run-1",
+            }),
+            {
+              status: 409,
+              headers: { "content-type": "application/problem+json" },
+            },
+          ),
+        );
+      }
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(
+            new TextEncoder().encode(
+              JSON.stringify({
+                protocol_version: "1.0",
+                sequence: 1,
+                event_id: "e1",
+                type: "response.started",
+                occurred_at: "2026-09-09T10:30:12.481Z",
+                conversation_id: CONVERSATION_ID,
+                run_id: "active-run-1",
+                data: {},
+              }) + "\n",
+            ),
+          );
+          controller.close();
+        },
+      });
+      return Promise.resolve(
+        new Response(body, {
+          status: 200,
+          headers: { "content-type": "application/x-ndjson" },
+        }),
+      );
+    });
+    vi.stubGlobal("fetch", fetchImpl);
+    render(<Transcript client={client} conversationId={CONVERSATION_ID} />);
+    await screen.findByRole("heading", { name: "Explain backpressure" });
+    await userEvent.type(screen.getByLabelText("Message"), "hello{Enter}");
+    expect(await screen.findByText(/following it/)).toBeTruthy();
+    const followCall = fetchImpl.mock.calls.find((call) =>
+      String(call[0]).includes("/response-runs/active-run-1/stream"),
+    );
+    expect(followCall).toBeTruthy();
   });
 });

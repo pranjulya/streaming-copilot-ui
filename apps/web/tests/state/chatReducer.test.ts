@@ -578,4 +578,92 @@ describe("chatReducer", () => {
     expect(emptyTurn().status).toBe("idle");
     expect(emptyTurn()).toEqual(emptyTurn());
   });
+
+  test("stop requested then completion wins the race shows completed", () => {
+    const state = reduce([
+      {
+        type: "optimistic",
+        conversationId: CONVERSATION,
+        clientMessageId: "client-1",
+        content: "q",
+      },
+      { type: "event", conversationId: CONVERSATION, event: started() },
+      {
+        type: "event",
+        conversationId: CONVERSATION,
+        event: delta(2, "answ", 0),
+      },
+      { type: "stop-requested", conversationId: CONVERSATION },
+      {
+        type: "event",
+        conversationId: CONVERSATION,
+        event: event({
+          sequence: 3,
+          type: "message.completed",
+          data: { content: "answer", finish_reason: "stop" },
+        }),
+      },
+      {
+        type: "event",
+        conversationId: CONVERSATION,
+        event: event({
+          sequence: 4,
+          type: "response.completed",
+          data: { finish_reason: "stop" },
+        }),
+      },
+    ]);
+    const turn = state.turnsByConversation[CONVERSATION];
+    expect(turn.status).toBe("completed");
+    expect(turn.assistantContent).toBe("answer");
+  });
+
+  test("stop requested then canonical cancelled keeps the partial text", () => {
+    const state = reduce([
+      {
+        type: "optimistic",
+        conversationId: CONVERSATION,
+        clientMessageId: "client-1",
+        content: "q",
+      },
+      { type: "event", conversationId: CONVERSATION, event: started() },
+      {
+        type: "event",
+        conversationId: CONVERSATION,
+        event: delta(2, "half", 0),
+      },
+      { type: "stop-requested", conversationId: CONVERSATION },
+      {
+        type: "canonical-status",
+        conversationId: CONVERSATION,
+        status: "cancelled",
+      },
+    ]);
+    const turn = state.turnsByConversation[CONVERSATION];
+    expect(turn.status).toBe("cancelled");
+    expect(turn.assistantContent).toBe("half");
+  });
+
+  test("restart-turn resets the cursor for a new run", () => {
+    const state = reduce([
+      {
+        type: "optimistic",
+        conversationId: CONVERSATION,
+        clientMessageId: "client-1",
+        content: "q",
+      },
+      { type: "event", conversationId: CONVERSATION, event: started() },
+      {
+        type: "event",
+        conversationId: CONVERSATION,
+        event: delta(2, "old", 0),
+      },
+      { type: "restart-turn", conversationId: CONVERSATION },
+    ]);
+    const turn = state.turnsByConversation[CONVERSATION];
+    expect(turn.status).toBe("submitting");
+    expect(turn.lastSequence).toBe(0);
+    expect(turn.assistantContent).toBe("");
+    expect(turn.userContent).toBe("q");
+  });
 });

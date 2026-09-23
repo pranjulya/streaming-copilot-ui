@@ -42,7 +42,15 @@ export type ChatAction =
   | { type: "navigate"; conversationId: string }
   | { type: "reset"; conversationId: string }
   | { type: "sendFailed"; conversationId: string }
-  | { type: "reconcile"; conversationId: string };
+  | { type: "reconcile"; conversationId: string }
+  | { type: "stop-requested"; conversationId: string }
+  | {
+      type: "canonical-status";
+      conversationId: string;
+      status: TurnStatus;
+      content?: string;
+    }
+  | { type: "restart-turn"; conversationId: string };
 
 export function emptyTurn(): TurnState {
   return {
@@ -108,6 +116,25 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       return withTurn(state, action.conversationId, (turn) => ({
         ...turn,
         status: "reconciling",
+      }));
+    case "stop-requested":
+      return withTurn(state, action.conversationId, (turn) => ({
+        ...turn,
+        status: turn.status === "completed" ? turn.status : "stopping",
+      }));
+    case "canonical-status":
+      return withTurn(state, action.conversationId, (turn) => ({
+        ...turn,
+        status: action.status,
+        assistantContent:
+          action.content === undefined ? turn.assistantContent : action.content,
+      }));
+    case "restart-turn":
+      return withTurn(state, action.conversationId, (turn) => ({
+        ...emptyTurn(),
+        clientMessageId: turn.clientMessageId,
+        userContent: turn.userContent,
+        status: "submitting",
       }));
     case "event":
       return applyEvent(state, action.conversationId, action.event);
