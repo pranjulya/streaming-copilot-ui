@@ -1,6 +1,7 @@
 "use client";
 
 import type { Message } from "../api/client";
+import { SafeMarkdown } from "../markdown/SafeMarkdown";
 
 const STATUS_LABELS: Record<Message["status"], string> = {
   complete: "",
@@ -19,7 +20,13 @@ export function MessageBubble({ message }: { message: Message }) {
     >
       <p className="message-role">{isUser ? "You" : "Copilot"}</p>
       <div className="message-content">
-        <p className="message-text">{message.content}</p>
+        {isUser ? (
+          <p className="message-text">{message.content}</p>
+        ) : (
+          <div className="message-text">
+            <SafeMarkdown content={message.content} />
+          </div>
+        )}
       </div>
       {statusLabel ? <p className="message-status">{statusLabel}</p> : null}
     </li>

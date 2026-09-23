@@ -4,7 +4,10 @@ import userEvent from "@testing-library/user-event";
 import axe from "axe-core";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
-import type { ConversationClient, ConversationSnapshot } from "../../features/chat/api/client";
+import type {
+  ConversationClient,
+  ConversationSnapshot,
+} from "../../features/chat/api/client";
 import { Composer } from "../../features/chat/components/Composer";
 import { Transcript } from "../../features/chat/components/Transcript";
 
@@ -76,7 +79,10 @@ describe("accessibility", () => {
       getConversation: vi.fn().mockResolvedValue(snapshot()),
     } as unknown as ConversationClient;
     const { container } = render(
-      <Transcript client={client} conversationId="0195f4da-0000-7000-8000-000000000001" />,
+      <Transcript
+        client={client}
+        conversationId="0195f4da-0000-7000-8000-000000000001"
+      />,
     );
     await screen.findByRole("heading", { name: "Explain backpressure" });
     const results = await axe.run(container, {
@@ -98,7 +104,10 @@ describe("reduced motion", () => {
   test("token animation is disabled under prefers-reduced-motion", async () => {
     const { readFile } = await import("node:fs/promises");
     const { resolve } = await import("node:path");
-    const css = await readFile(resolve(process.cwd(), "app/globals.css"), "utf8");
+    const css = await readFile(
+      resolve(process.cwd(), "app/globals.css"),
+      "utf8",
+    );
     expect(css).toContain("@media (prefers-reduced-motion: reduce)");
     expect(css).toMatch(/\.token-animation\s*\{\s*animation:\s*none;/);
   });

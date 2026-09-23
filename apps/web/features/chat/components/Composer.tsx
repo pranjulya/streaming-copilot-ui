@@ -2,7 +2,11 @@
 
 import { useState } from "react";
 
-export function Composer({ onSubmit }: { onSubmit: (content: string) => void }) {
+export function Composer({
+  onSubmit,
+}: {
+  onSubmit: (content: string) => void;
+}) {
   const [value, setValue] = useState("");
   const canSubmit = value.trim().length > 0;
 

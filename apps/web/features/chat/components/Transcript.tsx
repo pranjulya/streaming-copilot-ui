@@ -85,7 +85,9 @@ export function Transcript({
       )}
       <Composer
         onSubmit={(content) => {
-          setNotice(`“${content}” is ready to send; streaming arrives in the next phase.`);
+          setNotice(
+            `“${content}” is ready to send; streaming arrives in the next phase.`,
+          );
         }}
       />
       <p className="composer-notice" role="status">
