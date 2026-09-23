@@ -99,10 +99,26 @@ Changing the prompt is a configuration deploy, not a schema migration. Prompt te
 
 ## 6. Load-test shape (Phase 08 records the accepted numbers)
 
-Until Phase 08, the **planning target** used to size local soak tests is:
+The accepted local rehearsal (2026-09-23) uses the planning target:
 
 - 50 concurrent active streams
 - 5 new `create_response` requests per second
-- Mix: 70% complete under 5s fake-provider, 20% 30s streams, 10% cancel/retry
+- Mix: 70% short completions, 20% long streams, 10% cancel mid-stream
 
-PRD latency SLOs remain the release bar; this shape is not a traffic forecast.
+Measured results and method: `docs/operations/load-report.md`. PRD latency SLOs remain the release bar; this shape is not a traffic forecast.
+
+## 7. Calibrated defaults (Phase 08, 2026-09-23)
+
+The load rehearsal in `docs/operations/load-report.md` supports the shipped local defaults; these values are no longer placeholders:
+
+| Setting | Calibrated value | Evidence |
+|---|---|---|
+| `DELTA_FLUSH_MS` / `DELTA_FLUSH_CHARS` | 40 / 24 | Batching kept event rows at 486 for 50 streams with no added latency (accept p95 16.5 ms) |
+| `EVENT_FOLLOW_POLL_MS` | 50 | First-event p95 71 ms; cancel ack p95 7.1 ms |
+| `HEARTBEAT_INTERVAL_SECONDS` | 15 | No proxy timeouts observed; heartbeats stay invisible to clients |
+| `PROVIDER_CONNECT_TIMEOUT_SECONDS` / `PROVIDER_IDLE_TIMEOUT_SECONDS` / `GENERATION_TIMEOUT_SECONDS` | 10 / 30 / 120 | Idle enforcement exercised in supervisor tests; no premature timeouts under the 50-stream mix |
+| `LEASE_SECONDS` / `LEASE_RENEW_SECONDS` | 15 / 5 | Renewal loop held leases through every stream in the load run |
+| `EVENT_RETENTION_HOURS` | 24 | Retention bounds rows; content-mismatch metric stayed 0 |
+| `SHUTDOWN_GRACE_SECONDS` | 10 | Shutdown path waits for in-flight flushes in tests |
+
+Re-calibrate on production-like hardware before changing any value.
