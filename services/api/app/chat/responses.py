@@ -43,9 +43,9 @@ async def _owned_conversation(
     session: AsyncSession, conversation_id: UUID, user_id: str
 ) -> Conversation:
     conversation = await session.scalar(
-        select(Conversation).where(
-            Conversation.id == conversation_id, Conversation.user_id == user_id
-        )
+        select(Conversation)
+        .where(Conversation.id == conversation_id, Conversation.user_id == user_id)
+        .with_for_update()
     )
     if conversation is None:
         raise AppError(404, "not_found", "Conversation not found")
@@ -88,8 +88,10 @@ async def _find_key(
     if record is None:
         return None
     if record.expires_at <= datetime.now(UTC):
-        await session.delete(record)
-        return None
+        run = await session.get(ResponseRun, record.resource_id)
+        if run is None or run.status not in ACTIVE_RUN_STATUSES:
+            await session.delete(record)
+            return None
     if record.request_hash != request_hash:
         raise AppError(
             409,
@@ -412,6 +414,13 @@ async def regenerate_message(
                 )
                 if conversation.archived_at is not None:
                     raise AppError(409, "conversation_archived", "Conversation is archived")
+                if idempotency_key is not None and request_hash is not None:
+                    record = await _find_key(
+                        session, actor.user_id, operation, idempotency_key, request_hash
+                    )
+                    replay = await _keyed_run(session, record, actor.user_id)
+                    if replay is not None:
+                        return replay
                 active = await _active_run_id(session, message.conversation_id)
                 if active is not None:
                     raise AppError(
@@ -434,13 +443,6 @@ async def regenerate_message(
                         "invalid_run_state",
                         "There is no visible answer to regenerate",
                     )
-                if idempotency_key is not None and request_hash is not None:
-                    record = await _find_key(
-                        session, actor.user_id, operation, idempotency_key, request_hash
-                    )
-                    replay = await _keyed_run(session, record, actor.user_id)
-                    if replay is not None:
-                        return replay
                 await _assert_capacity(session, actor.user_id, settings)
                 source_run = await session.scalar(
                     select(ResponseRun)

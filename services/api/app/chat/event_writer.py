@@ -139,6 +139,15 @@ async def _stored_event(session: AsyncSession, run_id: UUID, event_type: str) ->
 async def start_run(run_id: UUID, *, session: AsyncSession) -> StreamEvent:
     async with session.begin():
         run = await _load_run_for_update(session, run_id)
+        if run.status == "streaming":
+            stored = await _stored_event(session, run_id, "response.started")
+            if stored is None:
+                raise AppError(
+                    409,
+                    "invalid_run_state",
+                    "Streaming run is missing its started event",
+                )
+            return stored
         assert_transition(run.status, "streaming")
         now = datetime.now(UTC)
         run.status = "streaming"
@@ -163,6 +172,12 @@ async def append_delta(run_id: UUID, delta: str, *, session: AsyncSession) -> St
                 "invalid_run_state",
                 "Cannot append content to a run that is not streaming",
             )
+        if run.cancel_requested_at is not None:
+            raise AppError(
+                409,
+                "invalid_run_state",
+                "Cannot append content to a run that has a pending cancel",
+            )
         message = await _load_message(session, run.assistant_message_id)
         content_index = len(message.content)
         message.content = message.content + delta
@@ -183,6 +198,12 @@ async def append_usage(run_id: UUID, usage: Usage, *, session: AsyncSession) -> 
                 409,
                 "invalid_run_state",
                 "Cannot record usage for a run that is not streaming",
+            )
+        if run.cancel_requested_at is not None:
+            raise AppError(
+                409,
+                "invalid_run_state",
+                "Cannot record usage for a run that has a pending cancel",
             )
         run.input_tokens = usage.input_tokens
         run.output_tokens = usage.output_tokens
@@ -286,8 +307,9 @@ async def cancel_run(run_id: UUID, *, session: AsyncSession) -> StreamEvent:
                     409, "invalid_run_state", "Terminal run is missing its committed events"
                 )
             return stored
-        assert_transition(run.status, "cancelling")
-        run.status = "cancelling"
+        if run.status != "cancelling":
+            assert_transition(run.status, "cancelling")
+            run.status = "cancelling"
         assert_transition(run.status, "cancelled")
         now = datetime.now(UTC)
         message = await _load_message(session, run.assistant_message_id)

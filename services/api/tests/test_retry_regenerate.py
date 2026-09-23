@@ -394,6 +394,113 @@ def test_regenerate_from_completed_hides_previous_answer() -> None:
     asyncio.run(scenario())
 
 
+def test_regenerate_replays_same_key_while_new_run_is_queued() -> None:
+    from app.chat.responses import regenerate_message
+
+    async def scenario() -> None:
+        user, _, user_message_id, _, _ = await seed_turn(
+            run_status="completed", prefix="regen-replay"
+        )
+        key = uuid.uuid4()
+        factory = session_factory()
+        async with factory() as session:
+            first = await regenerate_message(
+                user_message_id,
+                actor_for(user),
+                session=session,
+                settings=app_settings(),
+                idempotency_key=key,
+                request_hash="regen-same",
+            )
+        async with factory() as session:
+            replay = await regenerate_message(
+                user_message_id,
+                actor_for(user),
+                session=session,
+                settings=app_settings(),
+                idempotency_key=key,
+                request_hash="regen-same",
+            )
+        assert replay.id == first.id
+        assistants = await visible_assistants(user_message_id)
+        assert len(assistants) == 2
+
+    asyncio.run(scenario())
+
+
+def test_expired_idempotency_key_still_replays_active_run() -> None:
+    async def scenario() -> None:
+        user, conversation_id = await seed_plain_conversation(prefix="ttl-active")
+        key = uuid.uuid4()
+        first = await create_turn(  # type: ignore[arg-type]
+            user, create_cmd(conversation_id, key=key, request_hash="same")
+        )
+        factory = session_factory()
+        async with factory() as session:
+            async with session.begin():
+                await session.execute(
+                    text(
+                        "UPDATE idempotency_records SET expires_at = now() - interval '1 hour'"
+                        " WHERE key = :key"
+                    ),
+                    {"key": key},
+                )
+        replay = await create_turn(  # type: ignore[arg-type]
+            user, create_cmd(conversation_id, key=key, request_hash="same")
+        )
+        assert replay.id == first.id  # type: ignore[attr-defined]
+
+    asyncio.run(scenario())
+
+
+def test_create_turn_locks_conversation_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sqlalchemy import text as sql_text
+    from sqlalchemy.exc import DBAPIError
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from app.chat import responses as responses_mod
+
+    async def scenario() -> None:
+        user, conversation_id = await seed_plain_conversation(prefix="row-lock")
+        original = responses_mod._owned_conversation
+        locked = asyncio.Event()
+        release = asyncio.Event()
+
+        async def hold_row(session: object, conversation_id: uuid.UUID, user_id: str) -> object:
+            conversation = await original(session, conversation_id, user_id)  # type: ignore[arg-type]
+            locked.set()
+            await release.wait()
+            return conversation
+
+        monkeypatch.setattr(responses_mod, "_owned_conversation", hold_row)
+
+        async def probe_lock() -> None:
+            await locked.wait()
+            engine = create_async_engine(database_url())
+            try:
+                async with engine.connect() as connection:
+                    with pytest.raises(DBAPIError) as caught:
+                        await connection.execute(
+                            sql_text(
+                                "SELECT id FROM conversations WHERE id = :id FOR UPDATE NOWAIT"
+                            ),
+                            {"id": conversation_id},
+                        )
+                    assert caught.value.orig.sqlstate == "55P03"  # type: ignore[union-attr]
+            finally:
+                release.set()
+                await engine.dispose()
+
+        await asyncio.gather(
+            create_turn(user, create_cmd(conversation_id)),  # type: ignore[arg-type]
+            probe_lock(),
+        )
+
+    asyncio.run(scenario())
+
+
 def test_failed_creation_rolls_back_and_keeps_previous_answer_visible(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

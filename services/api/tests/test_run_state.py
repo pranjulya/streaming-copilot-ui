@@ -303,6 +303,92 @@ def test_start_run_is_sequence_one_and_deltas_follow_without_gaps() -> None:
     asyncio.run(scenario())
 
 
+def test_start_run_is_idempotent_when_already_streaming() -> None:
+    from sqlalchemy import text as sql_text
+
+    from app.chat.event_writer import start_run
+
+    async def scenario() -> None:
+        _, run_id, *_ = await seed_run_and_messages()
+        factory = writer_session_factory()
+        async with factory() as session:
+            first = await start_run(run_id, session=session)
+        async with factory() as session:
+            second = await start_run(run_id, session=session)
+        assert second.to_dict() == first.to_dict()
+        async with factory() as session:
+            count = (
+                await session.execute(
+                    sql_text(
+                        "SELECT count(*) FROM stream_events"
+                        " WHERE run_id = :id AND type = 'response.started'"
+                    ),
+                    {"id": run_id},
+                )
+            ).scalar_one()
+        assert count == 1
+
+    asyncio.run(scenario())
+
+
+def test_append_delta_rejects_cancel_requested_run() -> None:
+    from app.api.auth import Actor
+    from app.api.errors import AppError
+    from app.chat.event_writer import append_delta, start_run
+    from app.chat.responses import request_cancel
+
+    async def scenario() -> None:
+        user, run_id, *_ = await seed_run_and_messages()
+        factory = writer_session_factory()
+        async with factory() as session:
+            await start_run(run_id, session=session)
+        async with factory() as session:
+            await request_cancel(run_id, Actor(user_id=user), session=session)
+        with pytest.raises(AppError) as caught:
+            async with factory() as session:
+                await append_delta(run_id, "more", session=session)
+        assert caught.value.code == "invalid_run_state"
+
+    asyncio.run(scenario())
+
+
+def test_cancel_run_from_cancelling_lands_cancelled() -> None:
+    from sqlalchemy import text as sql_text
+
+    from app.chat.event_writer import cancel_run
+
+    async def scenario() -> None:
+        _, run_id, _, message_id = await seed_run_and_messages(status="cancelling")
+        factory = writer_session_factory()
+        async with factory() as session:
+            cancelled = await cancel_run(run_id, session=session)
+        assert cancelled.type == "response.cancelled"
+        async with factory() as session:
+            status = (
+                await session.execute(
+                    sql_text("SELECT status FROM response_runs WHERE id = :id"),
+                    {"id": run_id},
+                )
+            ).scalar_one()
+            message_status = (
+                await session.execute(
+                    sql_text("SELECT status FROM messages WHERE id = :id"),
+                    {"id": message_id},
+                )
+            ).scalar_one()
+            count = (
+                await session.execute(
+                    sql_text("SELECT count(*) FROM stream_events WHERE run_id = :id"),
+                    {"id": run_id},
+                )
+            ).scalar_one()
+        assert status == "cancelled"
+        assert message_status == "cancelled"
+        assert count == 1
+
+    asyncio.run(scenario())
+
+
 def test_concurrent_writers_produce_gapless_sequences() -> None:
     from sqlalchemy import text as sql_text
 
