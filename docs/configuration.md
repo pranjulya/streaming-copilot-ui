@@ -21,6 +21,18 @@ V1 has no feature flags.
 
 Same-site production: the edge serves `apps/web` and reverse-proxies `/v1` and `/health/live` to FastAPI. `/health/ready` is reachable only on the private network.
 
+### Production edge (Phase 07)
+
+`deploy/Caddyfile` is the reference edge; `deploy/README.md` documents the topology. The edge:
+
+- serves the Next.js app as the public web origin;
+- reverse-proxies `/v1/*` and `/health/live` to the API on the same site;
+- returns 404 for `/health/ready` and `/metrics` so they stay on the private network;
+- disables response buffering on the NDJSON routes;
+- receives secrets (`XAI_API_KEY`, `DATABASE_URL`, JWT settings) as injected environment variables, never from files in images.
+
+CI runs dependency scanning (`pip-audit`, `pnpm audit`) and secret scanning (gitleaks) on every change.
+
 ## 2. Environment catalog
 
 Prefix `COPILOT_` is unused; names below are canonical. Web bundles receive **only** `NEXT_PUBLIC_API_BASE` (empty string when same-origin).

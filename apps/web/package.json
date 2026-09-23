@@ -46,6 +46,9 @@
     "onlyBuiltDependencies": [
       "unrs-resolver",
       "sharp"
-    ]
+    ],
+    "overrides": {
+      "postcss": ">=8.5.18"
+    }
   }
 }

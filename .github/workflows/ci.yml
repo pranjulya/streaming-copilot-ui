@@ -60,6 +60,14 @@ jobs:
           pnpm --dir apps/web typecheck
           pnpm --dir apps/web format:check
           pnpm --dir apps/web build
+      - name: Dependency scanning
+        run: |
+          uv run --project services/api --with pip-audit pip-audit
+          pnpm --dir apps/web audit --audit-level high
+      - name: Secret scanning
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Verify actual development proxy with healthy database
         run: uv run --project services/api python scripts/smoke.py --require-db
       - name: Install Playwright browsers
