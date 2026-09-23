@@ -39,4 +39,4 @@ This directory is an execution map, not application code. Read `../Implementatio
 | 05 | Implemented; PR open | `phase-05-end-to-end-streaming` |
 | 06 | Implemented; pending gate review | `phase-06-resilience-controls` |
 | 07 | Implemented; pending gate review | `phase-07-production-guardrails` |
-| 08 | Not started | Phase 07 gate remains |
+| 08 | Implemented; pending gate review | `phase-08-verification-release` |
