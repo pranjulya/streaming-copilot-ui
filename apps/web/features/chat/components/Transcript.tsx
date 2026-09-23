@@ -80,6 +80,7 @@ export function Transcript({
   const conversationIdRef = useRef(conversationId);
   conversationIdRef.current = conversationId;
   const controllerRef = useRef<AbortController | null>(null);
+  const needsRecoveryRef = useRef(false);
   const stateRef = useRef(state);
   stateRef.current = state;
 
@@ -223,6 +224,7 @@ export function Transcript({
           if (caught instanceof Error && caught.message === "Send failed") {
             throw caught;
           }
+          needsRecoveryRef.current = true;
           setNotice(retryableNotice);
         }
       } else if (result.outcome === "rejected") {
@@ -260,6 +262,11 @@ export function Transcript({
     dispatch({ type: "stop-requested", conversationId });
     const runId = currentTurn().runId;
     if (runId !== null) {
+      try {
+        await client.cancelRun(runId);
+      } catch {
+        // A terminal run is a successful no-op; network errors fall through to polling.
+      }
       const settled = await pollRunUntilTerminal(client, runId, {
         delayMs: 300,
         attempts: 20,
@@ -323,6 +330,30 @@ export function Transcript({
     },
     [conversationId, loadSnapshot, runStreamedTurn],
   );
+
+  const recoverWhenOnline = useCallback(async () => {
+    if (!needsRecoveryRef.current) return;
+    needsRecoveryRef.current = false;
+    try {
+      const latest = await client.getConversation(conversationId);
+      if (latest.active_run) {
+        setNotice("Reconnecting to the running answer…");
+        await attachToActiveRun(
+          latest.active_run.id,
+          currentTurn().lastSequence,
+        );
+      }
+      await loadSnapshot();
+    } catch {
+      needsRecoveryRef.current = true;
+    }
+  }, [attachToActiveRun, client, conversationId, loadSnapshot]);
+
+  useEffect(() => {
+    const onOnline = () => void recoverWhenOnline();
+    window.addEventListener("online", onOnline);
+    return () => window.removeEventListener("online", onOnline);
+  }, [recoverWhenOnline]);
 
   if (error !== null) {
     return (
