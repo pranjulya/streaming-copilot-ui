@@ -1,12 +1,10 @@
 import { describe, expect, test } from "vitest";
 
-import { SECURITY_HEADERS } from "../middleware";
+import { buildCsp, STATIC_SECURITY_HEADERS } from "../middleware";
 
 describe("browser security headers", () => {
-  test("match docs/security.md exactly", () => {
-    expect(SECURITY_HEADERS).toEqual({
-      "Content-Security-Policy":
-        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'",
+  test("static headers match docs/security.md exactly", () => {
+    expect(STATIC_SECURITY_HEADERS).toEqual({
       "X-Content-Type-Options": "nosniff",
       "Referrer-Policy": "no-referrer",
       "X-Frame-Options": "DENY",
@@ -14,11 +12,26 @@ describe("browser security headers", () => {
     });
   });
 
-  test("no header enables inline scripts or framing", () => {
-    const csp = SECURITY_HEADERS["Content-Security-Policy"];
-    expect(csp).not.toContain("unsafe-eval");
-    expect(csp).toContain("script-src 'self'");
+  test("production csp keeps the spec directives with only a script nonce", () => {
+    const csp = buildCsp("test-nonce");
+    expect(csp).toContain("default-src 'self'");
+    expect(csp).toContain("script-src 'self' 'nonce-test-nonce'");
+    expect(csp).toContain("style-src 'self' 'unsafe-inline'");
+    expect(csp).toContain("img-src 'self' data:");
+    expect(csp).toContain("connect-src 'self'");
     expect(csp).toContain("frame-ancestors 'none'");
-    expect(csp).not.toContain("unsafe-inline; script");
+    expect(csp).toContain("base-uri 'self'");
+    expect(csp).not.toContain("unsafe-eval");
+    expect(csp).not.toMatch(/script-src[^;]*unsafe-inline/);
+  });
+
+  test("development csp relaxes only eval for the Next HMR runtime", () => {
+    const csp = buildCsp("test-nonce", { allowEval: true });
+    expect(csp).toContain("script-src 'self' 'nonce-test-nonce' 'unsafe-eval'");
+    expect(csp).not.toMatch(/script-src[^;]*unsafe-inline/);
+  });
+
+  test("nonces differ per request", () => {
+    expect(buildCsp("one")).not.toBe(buildCsp("two"));
   });
 });
