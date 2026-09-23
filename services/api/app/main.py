@@ -64,6 +64,9 @@ def create_app(settings: Settings | None = None, provider: LlmProvider | None = 
             provider=provider if provider is not None else _build_provider(config),
             settings=config,
         )
+        from app.api.auth_jwt import JwtVerifier
+
+        app.state.jwt_verifier = JwtVerifier(config)
         try:
             async with app.state.session_factory() as session:
                 await reap_orphaned_runs(session=session, settings=config)

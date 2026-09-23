@@ -2,13 +2,13 @@ from dataclasses import dataclass
 
 from fastapi import Request
 
-from app.api.errors import AppError
 from app.settings import Settings
 
 
 @dataclass(frozen=True)
 class Actor:
     user_id: str
+    auth_mode: str = "development"
 
 
 def require_actor(request: Request) -> Actor:
@@ -19,4 +19,7 @@ def require_actor(request: Request) -> Actor:
         if candidate:
             return Actor(user_id=candidate)
         return Actor(user_id=settings.dev_user_id or "dev-user")
-    raise AppError(401, "unauthenticated", "Authentication required")
+    from app.api.auth_jwt import authenticate
+
+    user_id, mode = authenticate(request, settings)
+    return Actor(user_id=user_id, auth_mode=mode)
