@@ -1,13 +1,14 @@
 import hashlib
 import json
-from datetime import UTC, datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api import rfc3339
 from app.api.auth import Actor, require_actor
 from app.api.errors import AppError
+from app.api.runs import run_snapshot_dict
 from app.chat.conversations import (
     ConversationPatch,
     CreateConversation,
@@ -16,6 +17,7 @@ from app.chat.conversations import (
     list_conversations,
     patch_conversation,
 )
+from app.chat.responses import active_run_map
 from app.persistence.models import Conversation, Message
 from app.persistence.session import get_session
 
@@ -67,18 +69,16 @@ def _validated_limit(limit: int, maximum: int) -> int:
     return limit
 
 
-def _rfc3339(value: datetime) -> str:
-    return value.astimezone(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
-
-
-def conversation_dict(conversation: Conversation) -> dict[str, object]:
+def conversation_dict(
+    conversation: Conversation, *, active_run_id: UUID | None = None
+) -> dict[str, object]:
     return {
         "id": str(conversation.id),
         "title": conversation.title,
-        "created_at": _rfc3339(conversation.created_at),
-        "updated_at": _rfc3339(conversation.updated_at),
-        "archived_at": _rfc3339(conversation.archived_at) if conversation.archived_at else None,
-        "active_run_id": None,
+        "created_at": rfc3339(conversation.created_at),
+        "updated_at": rfc3339(conversation.updated_at),
+        "archived_at": rfc3339(conversation.archived_at) if conversation.archived_at else None,
+        "active_run_id": str(active_run_id) if active_run_id else None,
     }
 
 
@@ -93,7 +93,7 @@ def message_dict(message: Message) -> dict[str, object]:
         "in_reply_to_id": str(message.in_reply_to_id) if message.in_reply_to_id else None,
         "version": message.version,
         "is_visible": message.is_visible,
-        "created_at": _rfc3339(message.created_at),
+        "created_at": rfc3339(message.created_at),
     }
 
 
@@ -114,7 +114,8 @@ async def create_conversation_route(
         request_hash=_fingerprint(raw_body, "POST", request.url.path),
     )
     conversation = await create_conversation(cmd, actor, session=session)
-    return conversation_dict(conversation)
+    active = await active_run_map(session, [conversation.id])
+    return conversation_dict(conversation, active_run_id=active.get(conversation.id))
 
 
 @router.get("")
@@ -127,8 +128,12 @@ async def list_conversations_route(
 ) -> dict[str, object]:
     _validated_limit(limit, maximum=100)
     page = await list_conversations(actor, cursor, limit, include_archived, session=session)
+    active = await active_run_map(session, [conversation.id for conversation in page.items])
     return {
-        "items": [conversation_dict(conversation) for conversation in page.items],
+        "items": [
+            conversation_dict(conversation, active_run_id=active.get(conversation.id))
+            for conversation in page.items
+        ],
         "next_cursor": page.next_cursor,
     }
 
@@ -145,13 +150,17 @@ async def get_conversation_route(
     snapshot = await get_conversation(
         conversation_id, actor, cursor, session=session, msg_limit=limit
     )
+    active_run = snapshot.active_run
     return {
-        "conversation": conversation_dict(snapshot.conversation),
+        "conversation": conversation_dict(
+            snapshot.conversation,
+            active_run_id=active_run.run.id if active_run else None,
+        ),
         "messages": {
             "items": [message_dict(message) for message in snapshot.messages],
             "next_cursor": snapshot.next_cursor,
         },
-        "active_run": None,
+        "active_run": run_snapshot_dict(active_run) if active_run else None,
     }
 
 
@@ -183,4 +192,5 @@ async def patch_conversation_route(
         session=session,
         request_hash=_fingerprint(raw_body, "PATCH", request.url.path),
     )
-    return conversation_dict(conversation)
+    active = await active_run_map(session, [conversation.id])
+    return conversation_dict(conversation, active_run_id=active.get(conversation.id))

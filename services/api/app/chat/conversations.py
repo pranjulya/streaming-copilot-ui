@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.auth import Actor
 from app.api.errors import AppError
+from app.chat.responses import RunSnapshot, active_run_snapshot
 from app.persistence import conversations as repository
 from app.persistence.models import Conversation, IdempotencyRecord, Message
 from app.settings import Settings
@@ -40,6 +41,7 @@ class ConversationSnapshot:
     conversation: Conversation
     messages: list[Message]
     next_cursor: str | None
+    active_run: RunSnapshot | None = None
 
 
 def _encode_cursor(timestamp: datetime, row_id: UUID) -> str:
@@ -180,7 +182,13 @@ async def get_conversation(
     next_cursor = (
         _encode_cursor(items[-1].created_at, items[-1].id) if len(rows) > msg_limit else None
     )
-    return ConversationSnapshot(conversation=conversation, messages=items, next_cursor=next_cursor)
+    active = await active_run_snapshot(session, conversation.id)
+    return ConversationSnapshot(
+        conversation=conversation,
+        messages=items,
+        next_cursor=next_cursor,
+        active_run=active,
+    )
 
 
 async def patch_conversation(

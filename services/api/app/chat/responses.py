@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.auth import Actor
 from app.api.errors import AppError
 from app.chat.event_writer import SafeFailure, fail_run
-from app.chat.state_machine import InvalidStateTransition
+from app.chat.state_machine import InvalidStateTransition, is_terminal
 from app.persistence.models import (
     Conversation,
     IdempotencyRecord,
@@ -554,3 +554,62 @@ async def reap_expired_leases(*, session: AsyncSession, settings: Settings) -> i
             ).all()
         )
     return await _fail_targets(session, target_ids)
+
+
+@dataclass(frozen=True)
+class RunSnapshot:
+    run: ResponseRun
+    partial_content: str
+
+
+async def get_run(run_id: UUID, actor: Actor, *, session: AsyncSession) -> RunSnapshot:
+    run = await session.scalar(
+        select(ResponseRun).where(ResponseRun.id == run_id, ResponseRun.user_id == actor.user_id)
+    )
+    if run is None:
+        raise AppError(404, "not_found", "Response run not found")
+    message = await session.get(Message, run.assistant_message_id)
+    return RunSnapshot(run=run, partial_content=message.content if message else "")
+
+
+async def request_cancel(run_id: UUID, actor: Actor, *, session: AsyncSession) -> RunSnapshot:
+    async with session.begin():
+        run = await session.scalar(
+            select(ResponseRun)
+            .where(ResponseRun.id == run_id, ResponseRun.user_id == actor.user_id)
+            .with_for_update()
+        )
+        if run is None:
+            raise AppError(404, "not_found", "Response run not found")
+        if not is_terminal(run.status) and run.cancel_requested_at is None:
+            run.cancel_requested_at = datetime.now(UTC)
+            run.updated_at = run.cancel_requested_at
+        message = await session.get(Message, run.assistant_message_id)
+        return RunSnapshot(run=run, partial_content=message.content if message else "")
+
+
+async def active_run_map(session: AsyncSession, conversation_ids: list[UUID]) -> dict[UUID, UUID]:
+    if not conversation_ids:
+        return {}
+    rows = (
+        await session.execute(
+            select(ResponseRun.conversation_id, ResponseRun.id).where(
+                ResponseRun.conversation_id.in_(conversation_ids),
+                ResponseRun.status.in_(ACTIVE_RUN_STATUSES),
+            )
+        )
+    ).all()
+    return {row[0]: row[1] for row in rows}
+
+
+async def active_run_snapshot(session: AsyncSession, conversation_id: UUID) -> RunSnapshot | None:
+    run = await session.scalar(
+        select(ResponseRun).where(
+            ResponseRun.conversation_id == conversation_id,
+            ResponseRun.status.in_(ACTIVE_RUN_STATUSES),
+        )
+    )
+    if run is None:
+        return None
+    message = await session.get(Message, run.assistant_message_id)
+    return RunSnapshot(run=run, partial_content=message.content if message else "")

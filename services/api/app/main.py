@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from app.api.conversations import router as conversations_router
 from app.api.errors import install_error_handlers
 from app.api.health import router
+from app.api.runs import router as runs_router
 from app.chat.responses import reap_expired_leases, reap_orphaned_runs
 from app.persistence.session import create_database_engine, create_session_factory
 from app.settings import Settings
@@ -52,4 +53,5 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     install_error_handlers(app)
     app.include_router(router)
     app.include_router(conversations_router)
+    app.include_router(runs_router)
     return app
