@@ -25,7 +25,10 @@ function event(overrides: Partial<StreamEvent> = {}): StreamEvent {
   };
 }
 
-function reduce(actions: ChatAction[], from: ChatState = initialChatState): ChatState {
+function reduce(
+  actions: ChatAction[],
+  from: ChatState = initialChatState,
+): ChatState {
   return actions.reduce(chatReducer, from);
 }
 
@@ -43,13 +46,22 @@ function started(sequence = 1): StreamEvent {
 }
 
 function delta(sequence: number, text: string, index: number): StreamEvent {
-  return event({ sequence, type: "message.delta", data: { delta: text, content_index: index } });
+  return event({
+    sequence,
+    type: "message.delta",
+    data: { delta: text, content_index: index },
+  });
 }
 
 describe("chatReducer", () => {
   test("optimistic turn then response.started maps ids", () => {
     const state = reduce([
-      { type: "optimistic", conversationId: CONVERSATION, clientMessageId: "client-1", content: "hi" },
+      {
+        type: "optimistic",
+        conversationId: CONVERSATION,
+        clientMessageId: "client-1",
+        content: "hi",
+      },
       { type: "event", conversationId: CONVERSATION, event: started() },
     ]);
     const turn = state.turnsByConversation[CONVERSATION];
@@ -63,14 +75,31 @@ describe("chatReducer", () => {
 
   test("deltas append in order and drive status to completed", () => {
     const state = reduce([
-      { type: "optimistic", conversationId: CONVERSATION, clientMessageId: "client-1", content: "q" },
+      {
+        type: "optimistic",
+        conversationId: CONVERSATION,
+        clientMessageId: "client-1",
+        content: "q",
+      },
       { type: "event", conversationId: CONVERSATION, event: started() },
-      { type: "event", conversationId: CONVERSATION, event: delta(2, "Back", 0) },
-      { type: "event", conversationId: CONVERSATION, event: delta(3, "pressure", 4) },
       {
         type: "event",
         conversationId: CONVERSATION,
-        event: event({ sequence: 4, type: "response.completed", data: { finish_reason: "stop" } }),
+        event: delta(2, "Back", 0),
+      },
+      {
+        type: "event",
+        conversationId: CONVERSATION,
+        event: delta(3, "pressure", 4),
+      },
+      {
+        type: "event",
+        conversationId: CONVERSATION,
+        event: event({
+          sequence: 4,
+          type: "response.completed",
+          data: { finish_reason: "stop" },
+        }),
       },
     ]);
     const turn = state.turnsByConversation[CONVERSATION];
@@ -81,19 +110,43 @@ describe("chatReducer", () => {
 
   test("duplicate sequence numbers are ignored", () => {
     const state = reduce([
-      { type: "optimistic", conversationId: CONVERSATION, clientMessageId: "client-1", content: "q" },
+      {
+        type: "optimistic",
+        conversationId: CONVERSATION,
+        clientMessageId: "client-1",
+        content: "q",
+      },
       { type: "event", conversationId: CONVERSATION, event: started() },
-      { type: "event", conversationId: CONVERSATION, event: delta(2, "once", 0) },
-      { type: "event", conversationId: CONVERSATION, event: delta(2, "twice", 0) },
+      {
+        type: "event",
+        conversationId: CONVERSATION,
+        event: delta(2, "once", 0),
+      },
+      {
+        type: "event",
+        conversationId: CONVERSATION,
+        event: delta(2, "twice", 0),
+      },
     ]);
-    expect(state.turnsByConversation[CONVERSATION].assistantContent).toBe("once");
+    expect(state.turnsByConversation[CONVERSATION].assistantContent).toBe(
+      "once",
+    );
   });
 
   test("a sequence gap marks reconciling without appending", () => {
     const state = reduce([
-      { type: "optimistic", conversationId: CONVERSATION, clientMessageId: "client-1", content: "q" },
+      {
+        type: "optimistic",
+        conversationId: CONVERSATION,
+        clientMessageId: "client-1",
+        content: "q",
+      },
       { type: "event", conversationId: CONVERSATION, event: started() },
-      { type: "event", conversationId: CONVERSATION, event: delta(4, "lost text", 0) },
+      {
+        type: "event",
+        conversationId: CONVERSATION,
+        event: delta(4, "lost text", 0),
+      },
     ]);
     const turn = state.turnsByConversation[CONVERSATION];
     expect(turn.status).toBe("reconciling");
@@ -102,9 +155,18 @@ describe("chatReducer", () => {
 
   test("content_index mismatch marks reconciling without appending", () => {
     const state = reduce([
-      { type: "optimistic", conversationId: CONVERSATION, clientMessageId: "client-1", content: "q" },
+      {
+        type: "optimistic",
+        conversationId: CONVERSATION,
+        clientMessageId: "client-1",
+        content: "q",
+      },
       { type: "event", conversationId: CONVERSATION, event: started() },
-      { type: "event", conversationId: CONVERSATION, event: delta(2, "abc", 5) },
+      {
+        type: "event",
+        conversationId: CONVERSATION,
+        event: delta(2, "abc", 5),
+      },
     ]);
     const turn = state.turnsByConversation[CONVERSATION];
     expect(turn.status).toBe("reconciling");
@@ -113,16 +175,29 @@ describe("chatReducer", () => {
 
   test("message.completed replaces accumulated content", () => {
     const state = reduce([
-      { type: "optimistic", conversationId: CONVERSATION, clientMessageId: "client-1", content: "q" },
+      {
+        type: "optimistic",
+        conversationId: CONVERSATION,
+        clientMessageId: "client-1",
+        content: "q",
+      },
       { type: "event", conversationId: CONVERSATION, event: started() },
-      { type: "event", conversationId: CONVERSATION, event: delta(2, "partial", 0) },
+      {
+        type: "event",
+        conversationId: CONVERSATION,
+        event: delta(2, "partial", 0),
+      },
       {
         type: "event",
         conversationId: CONVERSATION,
         event: event({
           sequence: 3,
           type: "message.completed",
-          data: { message_id: "assistant-1", content: "partial canonical answer", finish_reason: "stop" },
+          data: {
+            message_id: "assistant-1",
+            content: "partial canonical answer",
+            finish_reason: "stop",
+          },
         }),
       },
     ]);
@@ -133,14 +208,23 @@ describe("chatReducer", () => {
 
   test("response.snapshot replaces content and cursor", () => {
     const state = reduce([
-      { type: "optimistic", conversationId: CONVERSATION, clientMessageId: "client-1", content: "q" },
+      {
+        type: "optimistic",
+        conversationId: CONVERSATION,
+        clientMessageId: "client-1",
+        content: "q",
+      },
       {
         type: "event",
         conversationId: CONVERSATION,
         event: event({
           sequence: 42,
           type: "response.snapshot",
-          data: { status: "streaming", content: "canonical so far", last_sequence: 42 },
+          data: {
+            status: "streaming",
+            content: "canonical so far",
+            last_sequence: 42,
+          },
         }),
       },
     ]);
@@ -152,13 +236,30 @@ describe("chatReducer", () => {
 
   test("unknown event types and heartbeats do not change state", () => {
     const before = reduce([
-      { type: "optimistic", conversationId: CONVERSATION, clientMessageId: "client-1", content: "q" },
+      {
+        type: "optimistic",
+        conversationId: CONVERSATION,
+        clientMessageId: "client-1",
+        content: "q",
+      },
       { type: "event", conversationId: CONVERSATION, event: started() },
     ]);
     const after = reduce(
       [
-        { type: "event", conversationId: CONVERSATION, event: event({ sequence: 2, type: "tool.started" }) },
-        { type: "event", conversationId: CONVERSATION, event: event({ sequence: 2, type: "heartbeat", data: { last_sequence: 1 } }) },
+        {
+          type: "event",
+          conversationId: CONVERSATION,
+          event: event({ sequence: 2, type: "tool.started" }),
+        },
+        {
+          type: "event",
+          conversationId: CONVERSATION,
+          event: event({
+            sequence: 2,
+            type: "heartbeat",
+            data: { last_sequence: 1 },
+          }),
+        },
       ],
       before,
     );
@@ -167,9 +268,18 @@ describe("chatReducer", () => {
 
   test("cancelled and failed turns keep partial content", () => {
     const cancelled = reduce([
-      { type: "optimistic", conversationId: CONVERSATION, clientMessageId: "client-1", content: "q" },
+      {
+        type: "optimistic",
+        conversationId: CONVERSATION,
+        clientMessageId: "client-1",
+        content: "q",
+      },
       { type: "event", conversationId: CONVERSATION, event: started() },
-      { type: "event", conversationId: CONVERSATION, event: delta(2, "partial", 0) },
+      {
+        type: "event",
+        conversationId: CONVERSATION,
+        event: delta(2, "partial", 0),
+      },
       {
         type: "event",
         conversationId: CONVERSATION,
@@ -180,11 +290,20 @@ describe("chatReducer", () => {
         }),
       },
     ]);
-    expect(cancelled.turnsByConversation[CONVERSATION].status).toBe("cancelled");
-    expect(cancelled.turnsByConversation[CONVERSATION].assistantContent).toBe("partial");
+    expect(cancelled.turnsByConversation[CONVERSATION].status).toBe(
+      "cancelled",
+    );
+    expect(cancelled.turnsByConversation[CONVERSATION].assistantContent).toBe(
+      "partial",
+    );
 
     const failed = reduce([
-      { type: "optimistic", conversationId: CONVERSATION, clientMessageId: "client-1", content: "q" },
+      {
+        type: "optimistic",
+        conversationId: CONVERSATION,
+        clientMessageId: "client-1",
+        content: "q",
+      },
       { type: "event", conversationId: CONVERSATION, event: started() },
       {
         type: "event",
@@ -197,19 +316,32 @@ describe("chatReducer", () => {
       },
     ]);
     expect(failed.turnsByConversation[CONVERSATION].status).toBe("failed");
-    expect(failed.turnsByConversation[CONVERSATION].errorCode).toBe("provider_unavailable");
+    expect(failed.turnsByConversation[CONVERSATION].errorCode).toBe(
+      "provider_unavailable",
+    );
   });
 
   test("navigating away keeps other conversations' run state", () => {
     const other = "0195f4d4-0000-7000-8000-000000000002";
     const state = reduce([
-      { type: "optimistic", conversationId: CONVERSATION, clientMessageId: "client-1", content: "q" },
+      {
+        type: "optimistic",
+        conversationId: CONVERSATION,
+        clientMessageId: "client-1",
+        content: "q",
+      },
       { type: "event", conversationId: CONVERSATION, event: started() },
-      { type: "event", conversationId: CONVERSATION, event: delta(2, "half", 0) },
+      {
+        type: "event",
+        conversationId: CONVERSATION,
+        event: delta(2, "half", 0),
+      },
       { type: "navigate", conversationId: other },
     ]);
     expect(state.activeConversationId).toBe(other);
-    expect(state.turnsByConversation[CONVERSATION].assistantContent).toBe("half");
+    expect(state.turnsByConversation[CONVERSATION].assistantContent).toBe(
+      "half",
+    );
     expect(state.turnsByConversation[CONVERSATION].status).toBe("streaming");
   });
 

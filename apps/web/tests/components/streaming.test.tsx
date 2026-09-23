@@ -3,7 +3,11 @@ import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
-import type { ConversationClient, ConversationSnapshot } from "../../features/chat/api/client";
+import type {
+  ConversationClient,
+  ConversationSnapshot,
+  Message,
+} from "../../features/chat/api/client";
 import { Transcript } from "../../features/chat/components/Transcript";
 
 afterEach(cleanup);
@@ -11,13 +15,13 @@ afterEach(cleanup);
 const CONVERSATION_ID = "0195f4da-0000-7000-8000-000000000001";
 
 function snapshotWith(assistantText: string | null): ConversationSnapshot {
-  const messages = [
+  const messages: Message[] = [
     {
       id: "0195f4db-0000-7000-8000-000000000001",
       conversation_id: CONVERSATION_ID,
-      role: "user" as const,
+      role: "user",
       content: "Explain backpressure",
-      status: "complete" as const,
+      status: "complete",
       client_message_id: "0195f4d8-4ee0-7a35-8bc4-63cb5966b448",
       in_reply_to_id: null,
       version: 1,
@@ -29,10 +33,10 @@ function snapshotWith(assistantText: string | null): ConversationSnapshot {
     messages.push({
       id: "0195f4db-0000-7000-8000-000000000002",
       conversation_id: CONVERSATION_ID,
-      role: "assistant" as const,
+      role: "assistant",
       content: assistantText,
-      status: "complete" as const,
-      client_message_id: null as unknown as string,
+      status: "complete",
+      client_message_id: null,
       in_reply_to_id: "0195f4db-0000-7000-8000-000000000001",
       version: 1,
       is_visible: true,
@@ -53,7 +57,11 @@ function snapshotWith(assistantText: string | null): ConversationSnapshot {
   };
 }
 
-function envelope(sequence: number, type: string, data: Record<string, unknown>) {
+function envelope(
+  sequence: number,
+  type: string,
+  data: Record<string, unknown>,
+) {
   return JSON.stringify({
     protocol_version: "1.0",
     sequence,
@@ -66,7 +74,10 @@ function envelope(sequence: number, type: string, data: Record<string, unknown>)
   });
 }
 
-function streamingBody(lines: string[], chunkSize = 64): ReadableStream<Uint8Array> {
+function streamingBody(
+  lines: string[],
+  chunkSize = 64,
+): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
   const bytes = encoder.encode(lines.join("\n") + "\n");
   return new ReadableStream<Uint8Array>({
@@ -86,7 +97,9 @@ describe("Transcript streaming", () => {
     const client = {
       getConversation: vi.fn().mockImplementation(() => {
         call += 1;
-        return Promise.resolve(snapshotWith(call > 1 ? "Backpressure is flow control." : null));
+        return Promise.resolve(
+          snapshotWith(call > 1 ? "Backpressure is flow control." : null),
+        );
       }),
     } as unknown as ConversationClient;
 
@@ -115,11 +128,17 @@ describe("Transcript streaming", () => {
 
     render(<Transcript client={client} conversationId={CONVERSATION_ID} />);
     await screen.findByRole("heading", { name: "Explain backpressure" });
-    await userEvent.type(screen.getByLabelText("Message"), "Explain backpressure{Enter}");
+    await userEvent.type(
+      screen.getByLabelText("Message"),
+      "Explain backpressure{Enter}",
+    );
 
-    expect(await screen.findByText("Backpressure", {}, { timeout: 4000 })).toBeTruthy();
+    expect(
+      await screen.findByText("Backpressure", {}, { timeout: 4000 }),
+    ).toBeTruthy();
     await waitFor(
-      () => expect(screen.getByText("Backpressure is flow control.")).toBeTruthy(),
+      () =>
+        expect(screen.getByText("Backpressure is flow control.")).toBeTruthy(),
       { timeout: 4000 },
     );
 
@@ -150,7 +169,10 @@ describe("Transcript streaming", () => {
             status: 409,
             code: "conversation_busy",
           }),
-          { status: 409, headers: { "content-type": "application/problem+json" } },
+          {
+            status: 409,
+            headers: { "content-type": "application/problem+json" },
+          },
         ),
       ),
     );

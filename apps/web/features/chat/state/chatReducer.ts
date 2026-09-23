@@ -2,9 +2,11 @@ import type { StreamEvent } from "../stream/parseNdjson";
 
 export type TurnStatus =
   | "idle"
+  | "queued"
   | "submitting"
   | "connecting"
   | "streaming"
+  | "cancelling"
   | "stopping"
   | "reconciling"
   | "completed"
@@ -109,7 +111,11 @@ function withTurn(
   };
 }
 
-function applyEvent(state: ChatState, conversationId: string, event: StreamEvent): ChatState {
+function applyEvent(
+  state: ChatState,
+  conversationId: string,
+  event: StreamEvent,
+): ChatState {
   if (event.type === "heartbeat") return state;
   if (event.type === "response.snapshot") {
     return withTurn(state, conversationId, (turn) => ({
@@ -124,8 +130,12 @@ function applyEvent(state: ChatState, conversationId: string, event: StreamEvent
       ...turn,
       status: "streaming",
       userMessageId: String(event.data.user_message_id ?? turn.userMessageId),
-      assistantMessageId: String(event.data.assistant_message_id ?? turn.assistantMessageId),
-      clientMessageId: String(event.data.client_message_id ?? turn.clientMessageId),
+      assistantMessageId: String(
+        event.data.assistant_message_id ?? turn.assistantMessageId,
+      ),
+      clientMessageId: String(
+        event.data.client_message_id ?? turn.clientMessageId,
+      ),
       runId: event.run_id,
       lastSequence: event.sequence,
     }));
@@ -138,7 +148,9 @@ function applyEvent(state: ChatState, conversationId: string, event: StreamEvent
     event.type === "response.cancelled" ||
     event.type === "response.failed"
   ) {
-    if (event.sequence <= state.turnsByConversation[conversationId]?.lastSequence) {
+    if (
+      event.sequence <= state.turnsByConversation[conversationId]?.lastSequence
+    ) {
       return state;
     }
     const turn = state.turnsByConversation[conversationId] ?? emptyTurn();
@@ -173,8 +185,12 @@ function applyEvent(state: ChatState, conversationId: string, event: StreamEvent
     if (event.type === "message.completed") {
       return withTurn(state, conversationId, (current) => ({
         ...current,
-        assistantContent: String(event.data.content ?? current.assistantContent),
-        assistantMessageId: String(event.data.message_id ?? current.assistantMessageId),
+        assistantContent: String(
+          event.data.content ?? current.assistantContent,
+        ),
+        assistantMessageId: String(
+          event.data.message_id ?? current.assistantMessageId,
+        ),
         lastSequence: event.sequence,
       }));
     }
@@ -201,9 +217,13 @@ function applyEvent(state: ChatState, conversationId: string, event: StreamEvent
       status: "failed",
       errorCode: String(event.data.code ?? "internal_error"),
       diagnosticId:
-        event.data.diagnostic_id === undefined ? null : String(event.data.diagnostic_id),
+        event.data.diagnostic_id === undefined
+          ? null
+          : String(event.data.diagnostic_id),
       assistantContent:
-        event.data.content === undefined ? current.assistantContent : String(event.data.content),
+        event.data.content === undefined
+          ? current.assistantContent
+          : String(event.data.content),
       lastSequence: event.sequence,
     }));
   }
@@ -213,6 +233,7 @@ function applyEvent(state: ChatState, conversationId: string, event: StreamEvent
 function snapshotStatus(event: StreamEvent): TurnStatus {
   const status = String(event.data.status ?? "streaming");
   if (status === "queued" || status === "cancelling") return status;
-  if (status === "completed" || status === "cancelled" || status === "failed") return status;
+  if (status === "completed" || status === "cancelled" || status === "failed")
+    return status;
   return "streaming";
 }

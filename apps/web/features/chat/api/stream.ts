@@ -16,7 +16,9 @@ function requestIdempotencyKey(): string {
   return crypto.randomUUID();
 }
 
-export async function startResponse(options: StartResponseOptions): Promise<void> {
+export async function startResponse(
+  options: StartResponseOptions,
+): Promise<void> {
   const fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
   const response = await fetchImpl(
     `${options.baseUrl ?? ""}/v1/conversations/${options.conversationId}/responses`,
@@ -53,7 +55,12 @@ export async function startResponse(options: StartResponseOptions): Promise<void
     throw new ClientError(response.status, code, title, diagnosticId);
   }
   if (response.body === null) {
-    throw new ClientError(response.status, "stream_protocol_error", "Empty stream", null);
+    throw new ClientError(
+      response.status,
+      "stream_protocol_error",
+      "Empty stream",
+      null,
+    );
   }
   for await (const result of parseNdjson(response.body, options.signal)) {
     options.onResult(result);

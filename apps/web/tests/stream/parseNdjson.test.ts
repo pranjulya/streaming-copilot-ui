@@ -4,7 +4,9 @@ import { parseNdjson } from "../../features/chat/stream/parseNdjson";
 
 const encoder = new TextEncoder();
 
-function envelope(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+function envelope(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
   return {
     protocol_version: "1.0",
     sequence: 1,
@@ -27,7 +29,10 @@ function streamFrom(chunks: Uint8Array[]): ReadableStream<Uint8Array> {
   });
 }
 
-async function collect(chunks: Uint8Array[], signal = new AbortController().signal) {
+async function collect(
+  chunks: Uint8Array[],
+  signal = new AbortController().signal,
+) {
   const results = [];
   for await (const result of parseNdjson(streamFrom(chunks), signal)) {
     results.push(result);
@@ -50,7 +55,10 @@ describe("parseNdjson", () => {
 
   test("parses two events delivered in one chunk", async () => {
     const lines =
-      JSON.stringify(envelope()) + "\n" + JSON.stringify(envelope({ sequence: 2 })) + "\n";
+      JSON.stringify(envelope()) +
+      "\n" +
+      JSON.stringify(envelope({ sequence: 2 })) +
+      "\n";
     const results = await collect([encoder.encode(lines)]);
     expect(results).toHaveLength(2);
     expect(results.map((result) => result.kind)).toEqual(["event", "event"]);
@@ -60,7 +68,10 @@ describe("parseNdjson", () => {
     const line = `${JSON.stringify(envelope({ data: { delta: "café" } }))}\n`;
     const bytes = encoder.encode(line);
     const splitAt = bytes.indexOf(0xc3) + 1;
-    const results = await collect([bytes.slice(0, splitAt), bytes.slice(splitAt)]);
+    const results = await collect([
+      bytes.slice(0, splitAt),
+      bytes.slice(splitAt),
+    ]);
     expect(results[0]).toMatchObject({ kind: "event" });
     if (results[0].kind === "event") {
       expect(results[0].event.data.delta).toBe("café");
@@ -70,7 +81,9 @@ describe("parseNdjson", () => {
   test("keeps supplementary-plane characters intact for content_index math", async () => {
     const delta = "Backpressure 👍 is";
     const results = await collect([
-      encoder.encode(`${JSON.stringify(envelope({ data: { delta, content_index: 0 } }))}\n`),
+      encoder.encode(
+        `${JSON.stringify(envelope({ data: { delta, content_index: 0 } }))}\n`,
+      ),
     ]);
     if (results[0].kind !== "event") throw new Error("expected an event");
     const received = String(results[0].event.data.delta);
@@ -80,7 +93,11 @@ describe("parseNdjson", () => {
 
   test("tolerates CRLF line endings and ignores empty lines", async () => {
     const body =
-      JSON.stringify(envelope()) + "\r\n" + "\r\n" + JSON.stringify(envelope({ sequence: 2 })) + "\n";
+      JSON.stringify(envelope()) +
+      "\r\n" +
+      "\r\n" +
+      JSON.stringify(envelope({ sequence: 2 })) +
+      "\n";
     const results = await collect([encoder.encode(body)]);
     expect(results).toHaveLength(2);
   });
@@ -90,12 +107,17 @@ describe("parseNdjson", () => {
       encoder.encode("{not json}\n"),
       encoder.encode(JSON.stringify({ sequence: 1 }) + "\n"),
     ]);
-    expect(results.map((result) => result.kind)).toEqual(["invalid", "invalid"]);
+    expect(results.map((result) => result.kind)).toEqual([
+      "invalid",
+      "invalid",
+    ]);
   });
 
   test("yields protocol for an unsupported major version", async () => {
     const results = await collect([
-      encoder.encode(`${JSON.stringify(envelope({ protocol_version: "2.0" }))}\n`),
+      encoder.encode(
+        `${JSON.stringify(envelope({ protocol_version: "2.0" }))}\n`,
+      ),
     ]);
     expect(results[0]).toMatchObject({ kind: "protocol" });
   });
