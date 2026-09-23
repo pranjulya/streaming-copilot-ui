@@ -1,11 +1,14 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { expect, test, vi } from "vitest";
-import Page from "../app/page";
+import { AppShell } from "../features/chat/components/AppShell";
 import nextConfig from "../next.config";
 
-test("renders the Phase 00 heading", () => {
-  expect(renderToStaticMarkup(createElement(Page))).toBe("<h1>Copilot</h1>");
+test("renders the app shell with the Copilot title link", () => {
+  const markup = renderToStaticMarkup(createElement(AppShell, null, "content"));
+  expect(markup).toContain('class="app-title"');
+  expect(markup).toContain("Copilot");
+  expect(markup).toContain('aria-live="polite"');
 });
 
 test("development routes health and v1 calls to the API", async () => {
