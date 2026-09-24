@@ -1,6 +1,6 @@
 # Configuration and Local Runtime
 
-Named settings, local compose, and safe defaults. Numeric timeouts, flush batches, and retention windows are **calibrated in Phase 08**; local defaults below are only for development.
+Named settings, local compose, and safe defaults. Numeric timeouts, flush batches, and retention windows remain **uncalibrated local defaults** until a production-like soak is recorded; values below are for development.
 
 V1 has no feature flags.
 
@@ -63,7 +63,7 @@ Prefix `COPILOT_` is unused; names below are canonical. Web bundles receive **on
 | `CREATE_RESPONSE_PER_MINUTE` | no | `20` | no | Per-user send/retry/regenerate rate (best-effort **per API process**; V1 has no cluster-wide counter) |
 | `LEASE_SECONDS` | no | `15` | no | Generation ownership lease |
 | `LEASE_RENEW_SECONDS` | no | `5` | no | Renew interval |
-| `PROVIDER_CONNECT_TIMEOUT_SECONDS` | no | `10` | no | Local; Phase 08 may change |
+| `PROVIDER_CONNECT_TIMEOUT_SECONDS` | no | `10` | no | Local default; uncalibrated |
 | `PROVIDER_IDLE_TIMEOUT_SECONDS` | no | `30` | no | Local |
 | `GENERATION_TIMEOUT_SECONDS` | no | `120` | no | Local |
 | `HEARTBEAT_INTERVAL_SECONDS` | no | `15` | no | Connection-only heartbeat |
@@ -97,28 +97,26 @@ Changing the prompt is a configuration deploy, not a schema migration. Prompt te
 
 `type` in problem+json is `https://copilot.local/problems/{code}` where `{code}` matches the catalog in `docs/api-and-stream-contracts.md`. The host is a stable identifier, not a deployed website.
 
-## 6. Load-test shape (Phase 08 records the accepted numbers)
+## 6. Load-test shape (Phase 08)
 
-The accepted local rehearsal (2026-09-23) uses the planning target:
+The harness in `services/api/tests/load/load_stream_mix.py` assigns this mix:
 
-- 50 concurrent active streams
-- 5 new `create_response` requests per second
-- Mix: 70% short completions, 20% long streams, 10% cancel mid-stream
+- 50 streams started at 5 creates/s
+- Mix: 70% complete, 20% long (`[long]` prompt + `FAKE_PROVIDER_LONG_DELAY_SECONDS`), 10% cancel mid-stream
+- Raise `MAX_ACTIVE_RUNS_PER_USER` for a single-user soak (product default is 3)
 
-Measured results and method: `docs/operations/load-report.md`. PRD latency SLOs remain the release bar; this shape is not a traffic forecast.
+A production-like 50-in-flight soak (proxy + long streams) has not been recorded. Method: `docs/operations/load-report.md`. PRD latency SLOs remain the release bar.
 
-## 7. Calibrated defaults (Phase 08, 2026-09-23)
+## 7. Uncalibrated local defaults (Phase 08)
 
-The load rehearsal in `docs/operations/load-report.md` supports the shipped local defaults; these values are no longer placeholders:
+These numbers are the planning defaults from Phases 00–07. They are **not** calibrated from a 50-in-flight soak. Keep them until a production-like run is attached to `docs/operations/load-report.md`.
 
-| Setting | Calibrated value | Evidence |
+| Setting | Local default | Status |
 |---|---|---|
-| `DELTA_FLUSH_MS` / `DELTA_FLUSH_CHARS` | 40 / 24 | Batching kept event rows at 486 for 50 streams with no added latency (accept p95 16.5 ms) |
-| `EVENT_FOLLOW_POLL_MS` | 50 | First-event p95 71 ms; cancel ack p95 7.1 ms |
-| `HEARTBEAT_INTERVAL_SECONDS` | 15 | No proxy timeouts observed; heartbeats stay invisible to clients |
-| `PROVIDER_CONNECT_TIMEOUT_SECONDS` / `PROVIDER_IDLE_TIMEOUT_SECONDS` / `GENERATION_TIMEOUT_SECONDS` | 10 / 30 / 120 | Idle enforcement exercised in supervisor tests; no premature timeouts under the 50-stream mix |
-| `LEASE_SECONDS` / `LEASE_RENEW_SECONDS` | 15 / 5 | Renewal loop held leases through every stream in the load run |
-| `EVENT_RETENTION_HOURS` | 24 | Retention bounds rows; content-mismatch metric stayed 0 |
-| `SHUTDOWN_GRACE_SECONDS` | 10 | Shutdown path waits for in-flight flushes in tests |
-
-Re-calibrate on production-like hardware before changing any value.
+| `DELTA_FLUSH_MS` / `DELTA_FLUSH_CHARS` | 40 / 24 | Uncalibrated |
+| `EVENT_FOLLOW_POLL_MS` | 50 | Uncalibrated |
+| `HEARTBEAT_INTERVAL_SECONDS` | 15 | Uncalibrated |
+| `PROVIDER_CONNECT_TIMEOUT_SECONDS` / `PROVIDER_IDLE_TIMEOUT_SECONDS` / `GENERATION_TIMEOUT_SECONDS` | 10 / 30 / 120 | Uncalibrated; idle/generation timeouts are covered by supervisor tests |
+| `LEASE_SECONDS` / `LEASE_RENEW_SECONDS` | 15 / 5 | Uncalibrated; lease reaping is covered by unit tests |
+| `EVENT_RETENTION_HOURS` | 24 | Compaction deletes `stream_events` for terminal runs older than this window |
+| `SHUTDOWN_GRACE_SECONDS` | 10 | Shutdown drain is covered by supervisor tests |

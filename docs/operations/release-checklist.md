@@ -10,25 +10,32 @@ approval — an agent must not tick it.
       double-submit, rate limits, CORS/CSRF, log-redaction — see the workflow in
       `.github/workflows/ci.yml` and the suites under `services/api/tests` and
       `apps/web/tests`
-- [x] Test suites: API **141 passed** (1 opt-in live skip), web **69 passed**,
-      Playwright **6 journeys** (stream completion, cancel, reconnect,
-      retry/regenerate, ambiguous send, axe accessibility)
-- [x] Schema drift: `alembic check` reports no new upgrade operations
-- [x] Restore rehearsal: `scripts/rehearse_restore.sh` round-trips the database and
-      re-applies migrations at head (`services/api/tests/test_restore_rehearsal.py`)
-- [x] Load report: `docs/operations/load-report.md` — 50 streams, 5 creates/s,
-      70/20/10 mix; accept p95 16.5 ms, first event p95 71 ms, cancel ack p95
-      7.1 ms, 0 errors, `content_mismatch_total` 0
-- [x] Evaluation: versioned set in `eval/set.json`; FakeProvider is the CI gate
-      (`services/api/tests/test_eval_set.py`); live `grok-4.6` run is manual
+- [x] Test suites: API **181 passed** (1 opt-in live skip) with
+      `REHEARSE_RESTORE=1`, web **92 passed**, Playwright **6 journeys**
+      (stream completion, cancel, reconnect, retry/regenerate, ambiguous send,
+      axe accessibility)
+- [ ] Schema drift: CI runs `alembic upgrade head`; `alembic check` is not a CI step
+- [x] Restore rehearsal: `scripts/rehearse_restore.sh` dumps, restores into a
+      scratch database, runs alembic against that scratch URI, and requires
+      `alembic current` to report `(head)` (`services/api/tests/test_restore_rehearsal.py`;
+      CI sets `REHEARSE_RESTORE=1`)
+- [ ] Load report: harness assigns 70/20/10 and records peak in-flight
+      (`services/api/tests/load/load_stream_mix.py`); a production-like
+      50-in-flight soak is **not** attached — `docs/operations/load-report.md`
+- [x] Evaluation: versioned set `eval/set.json` (`2026-09-24.1`) covers
+      multi-turn context, refusal, Markdown, truncation, instruction hierarchy,
+      and a domain question; FakeProvider is the CI gate
+      (`services/api/tests/test_eval_set.py`); live `grok-4.6` baseline file
+      exists and is unrecorded (`eval/baseline.json`)
 - [x] Scans: `pip-audit` clean, `pnpm audit --audit-level high` clean (postcss
       override), gitleaks job in CI
 - [x] Accessibility: `docs/operations/accessibility-report.md` — 0 axe violations
       on list and transcript in Chromium
-- [x] Dashboards: `docs/operations/dashboards.md` (text queries, no user content)
+- [x] Dashboards: `docs/operations/dashboards.md` (text queries, no user content;
+      several histograms are registered and not emitting in V1)
 - [x] Runbook dry-run: `docs/operations/runbook.md` covers scenarios 1–14
-- [x] Calibrated values recorded: `docs/configuration.md` §7; `.env.example`
-      comments updated
+- [ ] Calibrated values: local defaults remain uncalibrated
+      (`docs/configuration.md` §7)
 - [ ] **Named owner approval** — human sign-off before release (not an agent step)
 
 ## Rollback position

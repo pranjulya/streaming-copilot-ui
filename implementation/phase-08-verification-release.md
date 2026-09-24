@@ -11,14 +11,14 @@
 - Create: `docs/operations/release-checklist.md` (evidence index; fill during this phase)
 - Create: `services/api/tests/load/` or `k6/` script matching the 50-stream mix
 - Create: `eval/set.json` small versioned prompts (no secrets)
-- Modify: `.env.example` comments with **calibrated** timeout/batch/retention values after measurement
+- Modify: `.env.example` comments with timeout/batch/retention values (uncalibrated until a soak)
 
 ### Task 1: Load and backpressure
 
-- [x] Run the mix: 50 concurrent streams, 5 creates/s, 70/20/10 complete/long/cancel.
-- [x] Measure accept latency, service first-event (exclude provider), cancel ack, reconnect catch-up, DB pool, RSS per connection.
-- [x] Confirm slow reader does not unbounded-buffer events (retention still bounds rows).
-- [x] Write chosen `DELTA_FLUSH_*`, `EVENT_FOLLOW_POLL_MS`, `HEARTBEAT_INTERVAL_SECONDS`, timeouts, `EVENT_RETENTION_HOURS` into configuration docs.
+- [x] Harness assigns 50 streams at 5 creates/s with 70/20/10 complete/long/cancel (production-like soak outstanding).
+- [x] Measure accept, first NDJSON event, cancel ack, reconnect first-byte, HTTP errors, harness RSS, peak in-flight.
+- [x] Compact terminal `stream_events` older than `EVENT_RETENTION_HOURS`; follow synthesizes snapshot.
+- [x] Record local defaults in configuration docs as uncalibrated until a soak is attached.
 - [x] Commit `docs: record calibrated streaming defaults`.
 
 ### Task 2: Migration rollback rehearsal
@@ -44,7 +44,7 @@
 ### Task 5: Runbook dry-run
 
 - [x] Walk scenarios 1–14 with the operator template.
-- [x] Named owner approval recorded in the checklist (human).
+- [ ] Named owner approval recorded in the checklist (human).
 - [x] Stop. Do not ship if any Phase 00–07 gate is red.
 
 ## Stop gate

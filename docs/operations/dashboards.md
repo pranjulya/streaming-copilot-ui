@@ -25,6 +25,13 @@ sum(rate(copilot_runs_orphaned_total[15m])) > 0.1
 
 ## Latency (PRD SLOs)
 
+`copilot_accept_latency_seconds` is observed on HTTP accept. The following
+histograms are registered in V1 but **not emitting**: 
+`copilot_service_first_event_seconds`, `copilot_generation_duration_seconds`,
+`copilot_cancel_ack_seconds`, `copilot_reconnect_catchup_seconds`,
+`copilot_db_tx_seconds`. Base pages on `copilot_http_requests_total` and
+`copilot_runs_terminal_total` until those observes are wired.
+
 ```promql
 histogram_quantile(0.95, sum by (le) (rate(copilot_accept_latency_seconds_bucket[5m])))
 histogram_quantile(0.95, sum by (le) (rate(copilot_service_first_event_seconds_bucket[5m])))
@@ -47,6 +54,10 @@ sum(rate(copilot_stream_bytes_total[5m]))
 
 ## Correctness
 
+`copilot_content_mismatch_total` and `copilot_runs_orphaned_total` are
+registered; mismatch is not incremented in V1 (the load harness compares
+streamed vs stored length client-side). Orphans increment on lease recovery.
+
 ```promql
 # Must stay zero: streamed terminal content disagreed with storage
 increase(copilot_content_mismatch_total[1h]) > 0
@@ -60,7 +71,7 @@ sum by (result) (rate(copilot_idempotency_hits_total[1h]))
 
 ## Alert routing
 
-Page on: sustained acceptance failures, readiness loss, any `content_mismatch`
-increase, orphan-rate spikes, first-event p95 regression beyond the PRD bar.
-Ticket on: event-store growth, rising retry/pagination usage, provider-specific
-error increases.
+Page on: sustained acceptance failures, readiness loss, orphan-rate spikes
+(`copilot_runs_orphaned_total`), HTTP 5xx ratio. Ticket on: event-store growth,
+rising retry/pagination usage, provider-specific error increases. First-event
+and content-mismatch Prometheus series are not emitting in V1.

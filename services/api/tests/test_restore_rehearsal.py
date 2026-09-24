@@ -31,6 +31,28 @@ def test_restore_rehearsal_script_is_present_and_executable() -> None:
 
 
 @pytest.mark.integration
+def test_restore_rehearsal_applies_alembic_to_the_scratch_copy() -> None:
+    """Alembic must run against the restored database, not the live source."""
+    content = SCRIPT.read_text()
+    lines = content.splitlines()
+    alembic_indexes = [index for index, line in enumerate(lines) if "alembic" in line]
+    assert alembic_indexes, "rehearsal must invoke alembic on the restored copy"
+    start = max(0, alembic_indexes[0] - 6)
+    block = "\n".join(lines[start : alembic_indexes[-1] + 1])
+    assert "SCRATCH" in block, "alembic DATABASE_URL must be the scratch URI"
+    assert "SOURCE_URI/postgresql" not in block
+    assert "alembic current" in block
+
+
+@pytest.mark.integration
+def test_restore_rehearsal_validates_scratch_name_and_uses_temp_count_files() -> None:
+    content = SCRIPT.read_text()
+    assert "invalid scratch" in content
+    assert "mktemp" in content
+    assert "/tmp/copilot-counts-source.txt" not in content
+
+
+@pytest.mark.integration
 def test_restore_rehearsal_round_trips_the_test_database() -> None:
     """Expensive: dumps the whole test database, restores it, compares counts."""
     if os.getenv("REHEARSE_RESTORE") != "1":

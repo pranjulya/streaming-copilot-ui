@@ -14,6 +14,7 @@ from app.api.errors import install_error_handlers
 from app.api.health import router
 from app.api.responses import router as responses_router
 from app.api.runs import router as runs_router
+from app.chat.event_writer import compact_expired_events
 from app.chat.responses import reap_expired_leases, reap_orphaned_runs
 from app.chat.supervisor import GenerationSupervisor
 from app.persistence.session import create_database_engine, create_session_factory
@@ -31,15 +32,19 @@ def _build_provider(config: Settings) -> LlmProvider:
 
     has_key = bool(config.xai_api_key and config.xai_api_key.get_secret_value().strip())
     if config.app_env == "development" and not has_key:
+        long_delay = config.fake_provider_long_delay_seconds
         plan = config.fake_provider_plan.strip()
         if plan:
-            return planned_provider_from_steps(json.loads(plan))
+            return planned_provider_from_steps(
+                json.loads(plan), long_delay_seconds=long_delay
+            )
         return FakeProvider(
             deltas=[
                 "This is the local fake provider. ",
                 "Set XAI_API_KEY to stream real model output.",
             ],
             finish_reason="stop",
+            long_delay_seconds=long_delay,
         )
     from app.providers.xai import XaiProvider
 
@@ -52,6 +57,9 @@ async def _periodic_lease_reaper(app: FastAPI, config: Settings) -> None:
         try:
             async with app.state.session_factory() as session:
                 await reap_expired_leases(session=session, settings=config)
+                await compact_expired_events(
+                    session=session, retention_hours=config.event_retention_hours
+                )
         except Exception:
             logger.exception("periodic lease reaper tick failed")
 
