@@ -42,6 +42,7 @@ class XaiProvider:
         payload = {
             "model": settings.xai_model,
             "stream": True,
+            "store": False,
             "input": [{"role": message.role, "content": message.content} for message in messages],
         }
         timeout = httpx.Timeout(
@@ -99,6 +100,7 @@ class XaiProvider:
                             finish_reason=_finish_reason(event),
                             usage=_usage(event),
                         )
+                        return
                     elif event_type == "error":
                         raise ProviderStreamError(
                             ProviderError(

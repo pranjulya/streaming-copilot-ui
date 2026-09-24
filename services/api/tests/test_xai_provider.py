@@ -71,6 +71,7 @@ def test_xai_adapter_maps_text_deltas_and_drops_reasoning() -> None:
         payload = json.loads(seen_requests[0].content)
         assert payload["model"] == "grok-4.6"
         assert payload["stream"] is True
+        assert payload["store"] is False
         assert payload["input"][0]["role"] == "user"
 
     asyncio.run(scenario())
@@ -89,6 +90,37 @@ def test_xai_adapter_maps_http_failures_to_provider_codes() -> None:
             async for _ in provider.stream([], signal=CancelSignal()):
                 pass
         assert caught.value.error.code == "provider_rate_limited"
+
+    asyncio.run(scenario())
+
+
+def test_xai_adapter_stops_after_response_completed() -> None:
+    from app.providers.protocol import CancelSignal, ProviderMessage
+    from app.providers.xai import XaiProvider
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=sse(
+                {
+                    "type": "response.completed",
+                    "response": {"usage": {"input_tokens": 1, "output_tokens": 1}},
+                },
+                {"type": "error"},
+            ),
+        )
+
+    async def scenario() -> None:
+        provider = XaiProvider(xai_settings(), transport=httpx.MockTransport(handler))
+        deltas = [
+            delta
+            async for delta in provider.stream(
+                [ProviderMessage(role="user", content="hi")], signal=CancelSignal()
+            )
+        ]
+        assert len(deltas) == 1
+        assert deltas[-1].finish_reason == "stop"
 
     asyncio.run(scenario())
 

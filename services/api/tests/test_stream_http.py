@@ -140,6 +140,31 @@ def test_create_and_stream_returns_schema_valid_ndjson() -> None:
     asyncio.run(scenario())
 
 
+def test_create_and_stream_schema_valid_when_provider_omits_usage() -> None:
+    from app.providers.fake import FakeProvider
+
+    async def scenario() -> None:
+        user = new_user("stream-nousage")
+        provider = FakeProvider(deltas=["ok"], finish_reason="stop", usage=None)
+        with api_client(user, provider) as client:
+            conversation_id = create_conversation(client)
+            with client.stream(
+                "POST",
+                f"/v1/conversations/{conversation_id}/responses",
+                json={"client_message_id": str(uuid.uuid4()), "content": "hi"},
+                headers={"Idempotency-Key": str(uuid.uuid4())},
+            ) as response:
+                assert response.status_code == 200
+                lines, _ = read_ndjson(response)
+        event_validator = validator()
+        for line in lines:
+            event_validator.validate(line)
+        completed = [line for line in lines if line["type"] == "response.completed"]
+        assert completed[-1]["data"]["usage"] == {"input_tokens": 0, "output_tokens": 0}
+
+    asyncio.run(scenario())
+
+
 def test_retry_and_regenerate_stream_new_run_and_require_idempotency_key() -> None:
     from app.providers.fake import FakeProvider
     from app.providers.protocol import ProviderError

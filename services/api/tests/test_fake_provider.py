@@ -1,11 +1,21 @@
 import asyncio
-import os
 
 import pytest
 
-pytestmark = pytest.mark.skipif(
-    not os.getenv("TEST_DATABASE_URL"), reason="Set TEST_DATABASE_URL for real Postgres"
-)
+
+def test_fake_provider_default_finish_includes_zero_usage() -> None:
+    from app.providers.fake import FakeProvider
+    from app.providers.protocol import CancelSignal
+
+    async def scenario() -> None:
+        provider = FakeProvider()
+        deltas = [delta async for delta in provider.stream([], signal=CancelSignal())]
+        assert deltas[-1].finish_reason == "stop"
+        assert deltas[-1].usage is not None
+        assert deltas[-1].usage.input_tokens == 0
+        assert deltas[-1].usage.output_tokens == 0
+
+    asyncio.run(scenario())
 
 
 def test_fake_provider_streams_scripted_text_and_finish() -> None:

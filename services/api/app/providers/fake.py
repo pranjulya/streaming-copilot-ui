@@ -28,7 +28,7 @@ class FakeProvider:
     ) -> None:
         self.deltas = list(deltas)
         self.finish_reason = finish_reason
-        self.usage = usage
+        self.usage = usage if usage is not None else Usage(0, 0)
         self.fail_after = fail_after
         self.failure = failure or ProviderError(
             code="provider_unavailable", message="The assistant is temporarily unavailable."

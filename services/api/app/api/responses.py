@@ -26,7 +26,6 @@ from app.chat.responses import (
     retry_run,
 )
 from app.persistence.models import ResponseRun
-from app.persistence.session import get_session
 from app.settings import Settings
 
 logger = logging.getLogger(__name__)
@@ -92,8 +91,8 @@ async def _ensure_generation(request: Request, run: ResponseRun) -> None:
     supervisor = request.app.state.supervisor
     try:
         await supervisor.start(run.id)
-    except RuntimeError:
-        logger.warning("run %s is not owned by this instance; skipping supervision", run.id)
+    except RuntimeError as exc:
+        logger.warning("run %s was not started: %s", run.id, exc)
 
 
 def _client_message_id(body: dict[str, object]) -> UUID:
@@ -130,7 +129,6 @@ async def create_response_and_stream(
     conversation_id: UUID,
     request: Request,
     actor: Actor = Depends(require_actor),
-    session: AsyncSession = Depends(get_session),
 ) -> StreamingResponse:
     raw_body = await request.body()
     body = _parse_json_object(raw_body)
@@ -143,7 +141,8 @@ async def create_response_and_stream(
         idempotency_key=_require_idempotency_key(request),
         request_hash=_fingerprint(raw_body, "POST", request.url.path),
     )
-    run = await create_response(cmd, actor, session=session, settings=settings)
+    async with request.app.state.session_factory() as session:
+        run = await create_response(cmd, actor, session=session, settings=settings)
     await _ensure_generation(request, run)
     return _ndjson_response(_follow(request.app.state.session_factory, run.id, 0, settings))
 
@@ -153,12 +152,12 @@ async def stream_response_run(
     run_id: UUID,
     request: Request,
     actor: Actor = Depends(require_actor),
-    session: AsyncSession = Depends(get_session),
 ) -> StreamingResponse:
     raw_body = await request.body()
     body = _parse_json_object(raw_body)
     _reject_unknown(body, {"after_sequence"})
-    await get_run(run_id, actor, session=session)
+    async with request.app.state.session_factory() as session:
+        await get_run(run_id, actor, session=session)
     settings: Settings = request.app.state.settings
     return _ndjson_response(
         _follow(request.app.state.session_factory, run_id, _after_sequence(body), settings)
@@ -170,20 +169,20 @@ async def retry_response_run(
     run_id: UUID,
     request: Request,
     actor: Actor = Depends(require_actor),
-    session: AsyncSession = Depends(get_session),
 ) -> StreamingResponse:
     raw_body = await request.body()
     body = _parse_json_object(raw_body)
     _reject_unknown(body, set())
     settings: Settings = request.app.state.settings
-    run = await retry_run(
-        run_id,
-        actor,
-        session=session,
-        settings=settings,
-        idempotency_key=_require_idempotency_key(request),
-        request_hash=_fingerprint(raw_body, "POST", request.url.path),
-    )
+    async with request.app.state.session_factory() as session:
+        run = await retry_run(
+            run_id,
+            actor,
+            session=session,
+            settings=settings,
+            idempotency_key=_require_idempotency_key(request),
+            request_hash=_fingerprint(raw_body, "POST", request.url.path),
+        )
     await _ensure_generation(request, run)
     return _ndjson_response(_follow(request.app.state.session_factory, run.id, 0, settings))
 
@@ -193,19 +192,19 @@ async def regenerate_message_and_stream(
     user_message_id: UUID,
     request: Request,
     actor: Actor = Depends(require_actor),
-    session: AsyncSession = Depends(get_session),
 ) -> StreamingResponse:
     raw_body = await request.body()
     body = _parse_json_object(raw_body)
     _reject_unknown(body, set())
     settings: Settings = request.app.state.settings
-    run = await regenerate_message(
-        user_message_id,
-        actor,
-        session=session,
-        settings=settings,
-        idempotency_key=_require_idempotency_key(request),
-        request_hash=_fingerprint(raw_body, "POST", request.url.path),
-    )
+    async with request.app.state.session_factory() as session:
+        run = await regenerate_message(
+            user_message_id,
+            actor,
+            session=session,
+            settings=settings,
+            idempotency_key=_require_idempotency_key(request),
+            request_hash=_fingerprint(raw_body, "POST", request.url.path),
+        )
     await _ensure_generation(request, run)
     return _ndjson_response(_follow(request.app.state.session_factory, run.id, 0, settings))

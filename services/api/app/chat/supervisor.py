@@ -1,12 +1,15 @@
 import asyncio
 import contextlib
+import logging
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.api.errors import AppError
 from app.chat.context import build_context
 from app.chat.event_writer import (
     CompletionResult,
@@ -29,9 +32,30 @@ from app.providers.protocol import (
 )
 from app.settings import Settings
 
+logger = logging.getLogger(__name__)
+
 
 def _failure_for(code: str, message: str) -> SafeFailure:
-    return SafeFailure(code=code, message=message, retryable=True)
+    return SafeFailure(code=code, message=message, retryable=code != "output_limit_exceeded")
+
+
+def wait_budget_seconds(
+    *,
+    now: float,
+    last_activity: float,
+    renew_at: float,
+    buffered_since: float,
+    has_buffer: bool,
+    idle_timeout: float,
+    flush_ms: int,
+    cancel_poll: float = 0.25,
+) -> float:
+    idle_left = idle_timeout - (now - last_activity)
+    renew_left = max(renew_at - now, 0.001)
+    wait = min(idle_left, renew_left, cancel_poll)
+    if has_buffer:
+        wait = min(wait, (flush_ms / 1000) - (now - buffered_since))
+    return max(wait, 0.001)
 
 
 async def _next_delta(iterator: AsyncIterator[ProviderDelta]) -> ProviderDelta | None:
@@ -57,6 +81,7 @@ class GenerationSupervisor:
 
     async def start(self, run_id: UUID) -> None:
         if not self._admitting:
+            await self._safe_fail(run_id, "server_restart")
             raise RuntimeError("supervisor is shutting down")
         await self._renew_lease(run_id)
         if run_id in self._tasks:
@@ -73,6 +98,22 @@ class GenerationSupervisor:
                 await task
             await self._safe_fail(run_id, "server_restart")
             self._tasks.pop(run_id, None)
+        try:
+            async with self._session_factory() as session:
+                leftover = list(
+                    (
+                        await session.scalars(
+                            select(ResponseRun.id).where(
+                                ResponseRun.owner_instance_id == self._settings.instance_id,
+                                ResponseRun.status.in_(("queued", "streaming", "cancelling")),
+                            )
+                        )
+                    ).all()
+                )
+            for run_id in leftover:
+                await self._safe_fail(run_id, "server_restart")
+        except Exception:
+            logger.exception("shutdown leftover run sweep failed")
 
     async def _renew_lease(self, run_id: UUID) -> None:
         async with self._session_factory() as session:
@@ -91,6 +132,10 @@ class GenerationSupervisor:
     async def _run(self, run_id: UUID) -> None:
         signal = CancelSignal()
         try:
+            if await self._cancel_requested(run_id):
+                async with self._session_factory() as session:
+                    await cancel_run(run_id, session=session)
+                return
             async with self._session_factory() as session:
                 await start_run(run_id, session=session)
             async with self._session_factory() as session:
@@ -101,7 +146,13 @@ class GenerationSupervisor:
             await self._generate(run_id, context.messages, signal)
         except asyncio.CancelledError:
             raise
+        except ProviderStreamError as exc:
+            await self._safe_fail(run_id, exc.error.code)
+        except (AppError, SQLAlchemyError):
+            logger.exception("run %s persistence failed", run_id)
+            await self._safe_fail(run_id, "persistence_failed")
         except Exception:
+            logger.exception("run %s failed", run_id)
             await self._safe_fail(run_id, "provider_unavailable")
         finally:
             self._tasks.pop(run_id, None)
@@ -132,8 +183,8 @@ class GenerationSupervisor:
                 if await self._cancel_requested(run_id):
                     signal.set()
                 if signal.cancelled:
-                    await self._flush(run_id, buffer)
-                    await cancel_run(run_id, session=self._session_factory())
+                    async with self._session_factory() as session:
+                        await cancel_run(run_id, session=session)
                     return
                 if now - last_activity >= settings.provider_idle_timeout_seconds:
                     await self._flush(run_id, buffer)
@@ -147,9 +198,15 @@ class GenerationSupervisor:
                     await self._flush(run_id, buffer)
                     buffered_chars = 0
                     buffered_since = loop.time()
-                wait_budget = settings.provider_idle_timeout_seconds - (loop.time() - last_activity)
-                wait_budget = min(wait_budget, max(renew_at - loop.time(), 0.01))
-                wait_budget = max(min(wait_budget, 0.25), 0.01)
+                wait_budget = wait_budget_seconds(
+                    now=loop.time(),
+                    last_activity=last_activity,
+                    renew_at=renew_at,
+                    buffered_since=buffered_since,
+                    has_buffer=bool(buffer),
+                    idle_timeout=settings.provider_idle_timeout_seconds,
+                    flush_ms=settings.delta_flush_ms,
+                )
                 done, _ = await asyncio.wait({next_task}, timeout=wait_budget)
                 if not done:
                     continue
@@ -185,6 +242,7 @@ class GenerationSupervisor:
                         await append_usage(run_id, delta.usage, session=session)
                 if delta.finish_reason is not None:
                     finish_reason = delta.finish_reason
+                    break
         finally:
             if not next_task.done():
                 next_task.cancel()

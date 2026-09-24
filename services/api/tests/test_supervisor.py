@@ -101,7 +101,50 @@ def test_context_keeps_newest_turns_within_budget_and_drops_oldest() -> None:
         assert result.messages[0].content == "SYS"
         contents = [message.content for message in result.messages[1:]]
         assert contents == ["c" * 20, "d" * 20]
-        assert result.dropped_turns == 2
+        assert result.dropped_turns == 1
+
+    asyncio.run(scenario())
+
+
+def test_context_drops_whole_turns_instead_of_orphan_assistants() -> None:
+    from app.chat.context import build_context
+
+    async def scenario() -> None:
+        factory = session_factory()
+        user = new_user("ctx-turn")
+        settings = context_settings(context_char_budget=12, system_prompt="SYS")
+        async with factory() as session:
+            async with session.begin():
+                conversation_id = await seed_conversation(session, user)
+                user_a = await seed_message(
+                    session, conversation_id, role="user", content="aa", status="complete"
+                )
+                await seed_message(
+                    session,
+                    conversation_id,
+                    role="assistant",
+                    content="bbbbbbbb",
+                    status="complete",
+                    in_reply_to_id=user_a,
+                )
+                user_c = await seed_message(
+                    session, conversation_id, role="user", content="cc", status="complete"
+                )
+                await seed_message(
+                    session,
+                    conversation_id,
+                    role="assistant",
+                    content="dd",
+                    status="complete",
+                    in_reply_to_id=user_c,
+                )
+        async with factory() as session:
+            result = await build_context(session, conversation_id, settings=settings)
+        contents = [message.content for message in result.messages[1:]]
+        roles = [message.role for message in result.messages[1:]]
+        assert contents == ["cc", "dd"]
+        assert roles == ["user", "assistant"]
+        assert result.dropped_turns == 1
 
     asyncio.run(scenario())
 
@@ -505,5 +548,199 @@ def test_supervisor_shutdown_fails_remaining_owned_runs() -> None:
         assert status == "failed"
         assert error_code == "server_restart"
         assert (await event_types(run_id))[-1] == "response.failed"
+
+    asyncio.run(scenario())
+
+
+def test_wait_budget_honors_delta_flush_ms() -> None:
+    from app.chat.supervisor import wait_budget_seconds
+
+    wait = wait_budget_seconds(
+        now=1.0,
+        last_activity=1.0,
+        renew_at=10.0,
+        buffered_since=1.0,
+        has_buffer=True,
+        idle_timeout=30.0,
+        flush_ms=40,
+    )
+    assert wait == pytest.approx(0.04)
+
+
+def test_supervisor_completes_when_provider_hangs_after_finish() -> None:
+    from app.chat.event_writer import Usage
+    from app.providers.protocol import CancelSignal, ProviderDelta, ProviderMessage
+
+    class HangAfterFinish:
+        async def stream(self, messages: list[ProviderMessage], *, signal: CancelSignal):
+            del messages, signal
+            yield ProviderDelta(text="hi")
+            yield ProviderDelta(finish_reason="stop", usage=Usage(1, 1))
+            await asyncio.Event().wait()
+            yield ProviderDelta(text="never")
+
+    async def scenario() -> None:
+        settings = supervisor_settings(provider_idle_timeout_seconds=5)
+        run_id, _, _ = await seed_supervised_run(
+            new_user("sup-hang-finish"), instance_id=settings.instance_id
+        )
+        supervisor = make_supervisor(HangAfterFinish(), settings)
+        try:
+            await supervisor.start(run_id)
+            assert await wait_terminal(run_id, wait_seconds=2) == "completed"
+        finally:
+            await supervisor.shutdown(0.05)
+
+    asyncio.run(scenario())
+
+
+def test_supervisor_cancels_queued_run_before_opening_provider() -> None:
+    from sqlalchemy import text
+
+    from app.providers.protocol import CancelSignal, ProviderDelta, ProviderMessage
+
+    opened = {"count": 0}
+
+    class RecordingProvider:
+        async def stream(self, messages: list[ProviderMessage], *, signal: CancelSignal):
+            del messages, signal
+            opened["count"] += 1
+            yield ProviderDelta(text="should-not-run")
+
+    async def scenario() -> None:
+        settings = supervisor_settings()
+        run_id, _, _ = await seed_supervised_run(
+            new_user("sup-pre-cancel"), instance_id=settings.instance_id
+        )
+        factory = session_factory()
+        async with factory() as session:
+            async with session.begin():
+                await session.execute(
+                    text("UPDATE response_runs SET cancel_requested_at = now() WHERE id = :id"),
+                    {"id": run_id},
+                )
+        supervisor = make_supervisor(RecordingProvider(), settings)
+        try:
+            await supervisor.start(run_id)
+            assert await wait_terminal(run_id) == "cancelled"
+        finally:
+            await supervisor.shutdown(0.05)
+        assert opened["count"] == 0
+        assert "response.started" not in await event_types(run_id)
+
+    asyncio.run(scenario())
+
+
+def test_supervisor_maps_persistence_errors_to_persistence_failed() -> None:
+    from app.api.errors import AppError
+    from app.providers.fake import FakeProvider
+
+    async def scenario() -> None:
+        settings = supervisor_settings()
+        run_id, _, _ = await seed_supervised_run(
+            new_user("sup-persist"), instance_id=settings.instance_id
+        )
+        supervisor = make_supervisor(FakeProvider(deltas=["x"]), settings)
+
+        async def boom(*args: object, **kwargs: object) -> object:
+            raise AppError(409, "invalid_run_state", "writer failed")
+
+        supervisor._flush = boom  # type: ignore[method-assign]
+        try:
+            await supervisor.start(run_id)
+            assert await wait_terminal(run_id) == "failed"
+        finally:
+            await supervisor.shutdown(0.05)
+        _, error_code = await run_state(run_id)
+        assert error_code == "persistence_failed"
+
+    asyncio.run(scenario())
+
+
+def test_supervisor_start_fails_queued_run_when_shutting_down() -> None:
+    from app.providers.fake import FakeProvider
+
+    async def scenario() -> None:
+        settings = supervisor_settings()
+        run_id, _, _ = await seed_supervised_run(
+            new_user("sup-admit"), instance_id=settings.instance_id
+        )
+        supervisor = make_supervisor(FakeProvider(deltas=["x"]), settings)
+        supervisor._admitting = False
+        with pytest.raises(RuntimeError, match="shutting down"):
+            await supervisor.start(run_id)
+        status, error_code = await run_state(run_id)
+        assert status == "failed"
+        assert error_code == "server_restart"
+
+    asyncio.run(scenario())
+
+
+def test_supervisor_shutdown_fails_owned_runs_never_started() -> None:
+    from app.providers.fake import FakeProvider
+
+    async def scenario() -> None:
+        settings = supervisor_settings()
+        run_id, _, _ = await seed_supervised_run(
+            new_user("sup-queued-shutdown"), instance_id=settings.instance_id
+        )
+        supervisor = make_supervisor(FakeProvider(deltas=["x"]), settings)
+        await supervisor.shutdown(0.05)
+        status, error_code = await run_state(run_id)
+        assert status == "failed"
+        assert error_code == "server_restart"
+
+    asyncio.run(scenario())
+
+
+def test_cancel_run_closes_the_supervisor_session() -> None:
+    from contextlib import asynccontextmanager
+
+    from sqlalchemy import text
+
+    from app.providers.fake import FakeProvider
+
+    async def scenario() -> None:
+        settings = supervisor_settings()
+        run_id, _, _ = await seed_supervised_run(
+            new_user("sup-session"), instance_id=settings.instance_id
+        )
+        supervisor = make_supervisor(
+            FakeProvider(deltas=["x"] * 5000, delay_seconds=0.01), settings
+        )
+        real_factory = supervisor._session_factory
+        opened = 0
+        closed = 0
+
+        @asynccontextmanager
+        async def tracking_factory() -> object:
+            nonlocal opened, closed
+            opened += 1
+            async with real_factory() as session:
+                try:
+                    yield session
+                finally:
+                    closed += 1
+
+        supervisor._session_factory = tracking_factory  # type: ignore[assignment]
+        factory = session_factory()
+        try:
+            await supervisor.start(run_id)
+            deadline = asyncio.get_running_loop().time() + 5
+            while asyncio.get_running_loop().time() < deadline:
+                if "message.delta" in await event_types(run_id):
+                    break
+                await asyncio.sleep(0.02)
+            async with factory() as session:
+                async with session.begin():
+                    await session.execute(
+                        text("UPDATE response_runs SET cancel_requested_at = now() WHERE id = :id"),
+                        {"id": run_id},
+                    )
+            assert await wait_terminal(run_id) == "cancelled"
+        finally:
+            await supervisor.shutdown(0.05)
+        assert opened == closed
+        assert opened > 0
 
     asyncio.run(scenario())

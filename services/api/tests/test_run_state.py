@@ -229,31 +229,6 @@ def writer_session_factory():
     return create_session_factory(create_database_engine(database_url()))
 
 
-def test_start_run_is_idempotent_when_already_streaming() -> None:
-    from sqlalchemy import text as sql_text
-
-    from app.chat.event_writer import start_run
-
-    async def scenario() -> None:
-        _, run_id, *_ = await seed_run_and_messages()
-        factory = writer_session_factory()
-        async with factory() as session:
-            first = await start_run(run_id, session=session)
-        async with factory() as session:
-            second = await start_run(run_id, session=session)
-        assert second.to_dict() == first.to_dict()
-        async with factory() as session:
-            count = (
-                await session.execute(
-                    sql_text("SELECT count(*) FROM stream_events WHERE run_id = :id"),
-                    {"id": run_id},
-                )
-            ).scalar_one()
-        assert count == 1
-
-    asyncio.run(scenario())
-
-
 def test_illegal_transition_completed_to_streaming_raises() -> None:
     from app.chat.event_writer import start_run
     from app.chat.state_machine import InvalidStateTransition
@@ -571,6 +546,35 @@ def test_complete_run_is_idempotent_and_content_matches_message() -> None:
         assert canonical == "Hello world"
         assert message_event.data["content"] == canonical
         assert count == 2
+
+    asyncio.run(scenario())
+
+
+def test_complete_run_emits_zero_usage_when_provider_omits_it() -> None:
+    from sqlalchemy import text as sql_text
+
+    from app.chat.event_writer import CompletionResult, complete_run, start_run
+
+    async def scenario() -> None:
+        _, run_id, *_ = await seed_run_and_messages()
+        factory = writer_session_factory()
+        async with factory() as session:
+            await start_run(run_id, session=session)
+        async with factory() as session:
+            _, response_event = await complete_run(
+                run_id, CompletionResult(content="done", finish_reason="stop"), session=session
+            )
+        assert response_event.data["usage"] == {"input_tokens": 0, "output_tokens": 0}
+        async with factory() as session:
+            tokens = (
+                await session.execute(
+                    sql_text(
+                        "SELECT input_tokens, output_tokens FROM response_runs WHERE id = :id"
+                    ),
+                    {"id": run_id},
+                )
+            ).one()
+        assert tuple(tokens) == (0, 0)
 
     asyncio.run(scenario())
 

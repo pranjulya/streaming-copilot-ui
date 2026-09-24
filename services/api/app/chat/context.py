@@ -36,18 +36,37 @@ async def build_context(
             .order_by(Message.created_at, Message.id)
         )
     ).all()
-    turns = [
+    included = [
         ProviderMessage(role=message.role, content=message.content)
         for message in rows
         if _include(message)
     ]
-    total = sum(len(turn.content) for turn in turns)
+    turns = _group_turns(included)
+    total = sum(len(message.content) for turn in turns for message in turn)
     dropped = 0
     while total > settings.context_char_budget and len(turns) > 1:
-        total -= len(turns[0].content)
-        turns.pop(0)
+        removed = turns.pop(0)
+        total -= sum(len(message.content) for message in removed)
         dropped += 1
     if dropped:
-        logger.info("context window trimmed: dropped %d context messages", dropped)
-    messages = [ProviderMessage(role="system", content=settings.system_prompt), *turns]
+        logger.info("context window trimmed: dropped %d context turns", dropped)
+    flattened = [message for turn in turns for message in turn]
+    messages = [ProviderMessage(role="system", content=settings.system_prompt), *flattened]
     return ContextResult(messages=messages, dropped_turns=dropped)
+
+
+def _group_turns(messages: list[ProviderMessage]) -> list[list[ProviderMessage]]:
+    turns: list[list[ProviderMessage]] = []
+    index = 0
+    while index < len(messages):
+        if messages[index].role == "user":
+            turn = [messages[index]]
+            index += 1
+            if index < len(messages) and messages[index].role == "assistant":
+                turn.append(messages[index])
+                index += 1
+            turns.append(turn)
+        else:
+            turns.append([messages[index]])
+            index += 1
+    return turns
