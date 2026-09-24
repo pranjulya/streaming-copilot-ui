@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import axe from "axe-core";
 import { afterEach, describe, expect, test, vi } from "vitest";
@@ -62,6 +62,28 @@ describe("Composer", () => {
     expect(button.hasAttribute("disabled")).toBe(true);
     await userEvent.type(screen.getByLabelText("Message"), "hi");
     expect(button.hasAttribute("disabled")).toBe(false);
+  });
+
+  test("ignores IME Enter and refocuses after submit", async () => {
+    const onSubmit = vi.fn();
+    render(<Composer onSubmit={onSubmit} />);
+    const input = screen.getByLabelText("Message");
+    await userEvent.type(input, "draft");
+    fireEvent.keyDown(input, { key: "Enter", isComposing: true, keyCode: 229 });
+    expect(onSubmit).not.toHaveBeenCalled();
+    await userEvent.type(input, "{Enter}");
+    expect(onSubmit).toHaveBeenCalledWith("draft");
+    expect(document.activeElement).toBe(input);
+  });
+
+  test("describes the disabled send button", () => {
+    render(<Composer onSubmit={() => {}} />);
+    const button = screen.getByRole("button", { name: "Send" });
+    const describedBy = button.getAttribute("aria-describedby");
+    expect(describedBy).toBeTruthy();
+    expect(document.getElementById(describedBy ?? "")?.textContent).toMatch(
+      /empty/i,
+    );
   });
 
   test("does not call any write API in this phase", async () => {

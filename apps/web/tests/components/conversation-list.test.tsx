@@ -7,6 +7,7 @@ import type {
   Conversation,
   ConversationClient,
 } from "../../features/chat/api/client";
+import { ClientError } from "../../features/chat/api/client";
 import { ConversationList } from "../../features/chat/components/ConversationList";
 
 afterEach(cleanup);
@@ -136,6 +137,136 @@ describe("ConversationList", () => {
         title: "Renamed",
       }),
     );
+  });
+
+  test("archive failure shows an error summary", async () => {
+    const client = stubClient({
+      listConversations: vi
+        .fn()
+        .mockResolvedValue({ items: [conversation()], next_cursor: null }),
+      patchConversation: vi
+        .fn()
+        .mockRejectedValue(
+          new ClientError(
+            409,
+            "conversation_busy",
+            "Conversation is busy",
+            null,
+          ),
+        ),
+    });
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<ConversationList client={client} />);
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Archive" }),
+    );
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "Conversation is busy",
+    );
+    vi.mocked(window.confirm).mockRestore();
+  });
+
+  test("ignores a stale list response after a newer load", async () => {
+    let resolveFirst: (value: {
+      items: Conversation[];
+      next_cursor: string | null;
+    }) => void = () => {};
+    const first = new Promise<{
+      items: Conversation[];
+      next_cursor: string | null;
+    }>((resolve) => {
+      resolveFirst = resolve;
+    });
+    const listConversations = vi
+      .fn()
+      .mockReturnValueOnce(first)
+      .mockResolvedValueOnce({
+        items: [conversation({ title: "Archived view" })],
+        next_cursor: null,
+      });
+    render(<ConversationList client={stubClient({ listConversations })} />);
+    await userEvent.click(screen.getByLabelText("Show archived"));
+    expect(await screen.findByText("Archived view")).toBeTruthy();
+    resolveFirst({
+      items: [conversation({ title: "Stale view" })],
+      next_cursor: null,
+    });
+    await waitFor(() => expect(screen.queryByText("Stale view")).toBeNull());
+    expect(screen.getByText("Archived view")).toBeTruthy();
+  });
+
+  test("keeps a create that races the initial list load", async () => {
+    let resolveList: (value: {
+      items: Conversation[];
+      next_cursor: string | null;
+    }) => void = () => {};
+    const list = new Promise<{
+      items: Conversation[];
+      next_cursor: string | null;
+    }>((resolve) => {
+      resolveList = resolve;
+    });
+    const created = conversation({
+      id: "0195f4da-0000-7000-8000-0000000000aa",
+      title: "Created while loading",
+    });
+    const client = stubClient({
+      listConversations: vi.fn().mockReturnValue(list),
+      createConversation: vi.fn().mockResolvedValue(created),
+    });
+    render(<ConversationList client={client} />);
+    expect(screen.getByText("Loading conversations…")).toBeTruthy();
+    await userEvent.click(
+      screen.getByRole("button", { name: "New conversation" }),
+    );
+    resolveList({ items: [], next_cursor: null });
+    expect(
+      await screen.findByRole("link", { name: "Created while loading" }),
+    ).toBeTruthy();
+  });
+
+  test("load more appends the next page of conversations", async () => {
+    const first = conversation({ title: "Newest" });
+    const second = conversation({
+      id: "0195f4da-0000-7000-8000-000000000002",
+      title: "Older",
+    });
+    const listConversations = vi
+      .fn()
+      .mockResolvedValueOnce({ items: [first], next_cursor: "page-2" })
+      .mockResolvedValueOnce({ items: [second], next_cursor: null });
+    render(<ConversationList client={stubClient({ listConversations })} />);
+    expect(await screen.findByText("Newest")).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: "Load more" }));
+    expect(await screen.findByText("Older")).toBeTruthy();
+    expect(screen.getByText("Newest")).toBeTruthy();
+    expect(listConversations.mock.calls[1][0]).toMatchObject({
+      cursor: "page-2",
+    });
+  });
+
+  test("archived conversations stay visible with Restore", async () => {
+    const patch = vi
+      .fn()
+      .mockResolvedValue(
+        conversation({ archived_at: "2026-09-09T11:00:00.000Z" }),
+      );
+    const client = stubClient({
+      listConversations: vi
+        .fn()
+        .mockResolvedValue({ items: [conversation()], next_cursor: null }),
+      patchConversation: patch,
+    });
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<ConversationList client={client} />);
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Archive" }),
+    );
+    expect(await screen.findByRole("button", { name: "Restore" })).toBeTruthy();
+    expect(
+      screen.getByRole("link", { name: "First conversation" }),
+    ).toBeTruthy();
+    vi.mocked(window.confirm).mockRestore();
   });
 
   test("new conversation button creates and prepends", async () => {

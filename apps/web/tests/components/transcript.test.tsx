@@ -98,6 +98,36 @@ describe("Transcript", () => {
     );
   });
 
+  test("follows message next_cursor until later pages are loaded", async () => {
+    const older = message({ id: "msg-old", content: "oldest turn" });
+    const newer = message({
+      id: "msg-new",
+      content: "newest turn",
+      created_at: "2026-09-09T11:00:00.000Z",
+    });
+    const getConversation = vi
+      .fn()
+      .mockResolvedValueOnce(
+        snapshot({ messages: { items: [older], next_cursor: "cursor-1" } }),
+      )
+      .mockResolvedValueOnce(
+        snapshot({ messages: { items: [newer], next_cursor: null } }),
+      );
+    const client = { getConversation } as unknown as ConversationClient;
+    render(
+      <Transcript
+        client={client}
+        conversationId="0195f4da-0000-7000-8000-000000000001"
+      />,
+    );
+    expect(await screen.findByText("oldest turn")).toBeTruthy();
+    expect(screen.getByText("newest turn")).toBeTruthy();
+    expect(getConversation).toHaveBeenCalledTimes(2);
+    expect(getConversation.mock.calls[1][1]).toMatchObject({
+      cursor: "cursor-1",
+    });
+  });
+
   test("shows a not-found summary for 404", async () => {
     const { ClientError } = await import("../../features/chat/api/client");
     const client = {

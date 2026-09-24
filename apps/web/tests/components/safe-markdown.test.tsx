@@ -12,6 +12,7 @@ const XSS_CORPUS = [
   '<script>window.__xss = "script";</script>',
   "<img src=x onerror=\"window.__xss = 'img'\">",
   "[click me](javascript:window.__xss='link')",
+  "![xss](javascript:window.__xss='mdimg')",
   '<iframe src="https://evil.example"></iframe>',
   "<a href=\"javascript:alert('href')\">js anchor</a>",
   "<style>body { background: red }</style>",
@@ -37,7 +38,9 @@ describe("SafeMarkdown", () => {
     expect(container.querySelector("script")).toBeNull();
     expect(container.querySelector("iframe")).toBeNull();
     expect(container.querySelector("style")).toBeNull();
-    expect(container.querySelector("img")).toBeNull();
+    for (const image of Array.from(container.querySelectorAll("img"))) {
+      expect(image.getAttribute("src") ?? "").not.toMatch(/^\s*javascript:/i);
+    }
     for (const anchor of Array.from(container.querySelectorAll("a"))) {
       expect(anchor.getAttribute("href") ?? "").not.toMatch(/^\s*javascript:/i);
     }

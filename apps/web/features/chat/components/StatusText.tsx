@@ -1,6 +1,6 @@
 export type RunStatus = "queued" | "streaming" | "cancelling";
 
-const LABELS: Record<string, string> = {
+const LABELS: Record<RunStatus, string> = {
   queued: "Waiting to start…",
   streaming: "Generating a response…",
   cancelling: "Stopping…",

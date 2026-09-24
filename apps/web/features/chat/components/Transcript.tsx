@@ -23,19 +23,38 @@ export function Transcript({
     let active = true;
     setSnapshot(null);
     setError(null);
-    client
-      .getConversation(conversationId)
-      .then((result) => {
-        if (active) setSnapshot(result);
-      })
-      .catch((caught: unknown) => {
+    void (async () => {
+      try {
+        let cursor: string | null = null;
+        let combined: ConversationSnapshot | null = null;
+        do {
+          const page = await client.getConversation(
+            conversationId,
+            cursor === null ? {} : { cursor },
+          );
+          if (!active) return;
+          combined =
+            combined === null
+              ? page
+              : {
+                  ...page,
+                  messages: {
+                    items: [...combined.messages.items, ...page.messages.items],
+                    next_cursor: page.messages.next_cursor,
+                  },
+                };
+          cursor = page.messages.next_cursor;
+        } while (cursor !== null);
+        if (active) setSnapshot(combined);
+      } catch (caught: unknown) {
         if (!active) return;
         setError(
           caught instanceof ClientError && caught.status === 404
             ? "This conversation does not exist."
             : "The conversation could not be loaded.",
         );
-      });
+      }
+    })();
     return () => {
       active = false;
     };
@@ -77,17 +96,15 @@ export function Transcript({
       {visible.length === 0 ? (
         <p className="empty-transcript">No messages yet.</p>
       ) : (
-        <ol className="transcript-list">
+        <ol className="transcript-list" role="list">
           {visible.map((message) => (
             <MessageBubble key={message.id} message={message} />
           ))}
         </ol>
       )}
       <Composer
-        onSubmit={(content) => {
-          setNotice(
-            `“${content}” is ready to send; streaming arrives in the next phase.`,
-          );
+        onSubmit={() => {
+          setNotice("Sending is not available yet.");
         }}
       />
       <p className="composer-notice" role="status">
