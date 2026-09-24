@@ -168,3 +168,48 @@ def test_oversized_json_is_rejected_even_when_it_would_be_valid() -> None:
             assert big.status_code == 413
 
     asyncio.run(scenario())
+
+
+def test_content_length_header_is_rejected_before_the_body_is_read() -> None:
+    from app.api.body_limit import RequestBodyLimitMiddleware
+
+    async def inner(scope, receive, send):  # type: ignore[no-untyped-def]
+        while True:
+            message = await receive()
+            if not message.get("more_body"):
+                break
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok"})
+
+    async def scenario() -> None:
+        app = RequestBodyLimitMiddleware(inner, max_bytes=32)
+        sent: list[dict[str, object]] = []
+
+        async def receive() -> dict[str, object]:
+            raise AssertionError("body must not be read when Content-Length exceeds the bound")
+
+        async def send(message: dict[str, object]) -> None:
+            sent.append(message)
+
+        scope = {
+            "type": "http",
+            "asgi": {"version": "3.0"},
+            "method": "POST",
+            "path": "/v1/conversations",
+            "headers": [(b"content-length", b"10000")],
+        }
+        await app(scope, receive, send)
+        assert sent[0]["status"] == 413
+
+    asyncio.run(scenario())
+
+
+def test_idle_rate_limit_buckets_are_evicted() -> None:
+    from app.api.rate_limit import UserRateLimiter
+
+    limiter = UserRateLimiter(per_minute=2, window_seconds=1.0)
+    limiter.check("stale-user")
+    limiter._events["stale-user"].clear()
+    limiter.check("fresh-user")
+    assert "stale-user" not in limiter._events
+    assert "fresh-user" in limiter._events

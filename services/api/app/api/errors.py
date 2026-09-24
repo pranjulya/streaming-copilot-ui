@@ -51,13 +51,15 @@ def problem_response(
 def install_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(AppError)
     async def handle_app_error(request: Request, exc: AppError) -> JSONResponse:
-        return problem_response(
+        response = problem_response(
             exc.status_code,
             exc.code,
             exc.title,
             headers=exc.headers,
             **exc.extensions,
         )
+        response.headers["x-problem-code"] = exc.code
+        return response
 
     @app.exception_handler(RequestValidationError)
     async def handle_validation_error(

@@ -21,6 +21,8 @@ from app.chat.event_writer import (
     start_run,
 )
 from app.chat.failures import safe_failure
+from app.observability.metrics import RUNS_ACTIVE
+from app.observability.tracing import generation_span
 from app.persistence.models import Message, ResponseRun
 from app.providers.protocol import (
     CancelSignal,
@@ -83,6 +85,7 @@ class GenerationSupervisor:
         if run_id in self._tasks:
             return
         self._tasks[run_id] = asyncio.create_task(self._supervise_run(run_id))
+        RUNS_ACTIVE.labels(model=self._settings.xai_model).set(len(self._tasks))
 
     def set_provider(self, provider: LlmProvider) -> None:
         """Development/test hook: swap the provider used for future runs."""
@@ -132,18 +135,21 @@ class GenerationSupervisor:
     async def _supervise_run(self, run_id: UUID) -> None:
         signal = CancelSignal()
         try:
-            if await self._cancel_requested(run_id):
-                async with self._session_factory() as session:
-                    await cancel_run(run_id, session=session)
-                return
-            async with self._session_factory() as session:
-                await start_run(run_id, session=session)
-            async with self._session_factory() as session:
-                run = await session.get(ResponseRun, run_id)
-                if run is None:
+            with generation_span(logger, run_id):
+                if await self._cancel_requested(run_id):
+                    async with self._session_factory() as session:
+                        await cancel_run(run_id, session=session)
                     return
-                context = await build_context(session, run.conversation_id, settings=self._settings)
-            await self._generate(run_id, context.messages, signal)
+                async with self._session_factory() as session:
+                    await start_run(run_id, session=session)
+                async with self._session_factory() as session:
+                    run = await session.get(ResponseRun, run_id)
+                    if run is None:
+                        return
+                    context = await build_context(
+                        session, run.conversation_id, settings=self._settings
+                    )
+                await self._generate(run_id, context.messages, signal)
         except asyncio.CancelledError:
             raise
         except ProviderStreamError as exc:
@@ -159,6 +165,7 @@ class GenerationSupervisor:
             await self._safe_fail(run_id, "persistence_failed")
         finally:
             self._tasks.pop(run_id, None)
+            RUNS_ACTIVE.labels(model=self._settings.xai_model).set(len(self._tasks))
 
     async def _cancel_after_rejected_append(self, run_id: UUID) -> None:
         """Finish as cancelled when the append a pending cancel rejected was the last write.

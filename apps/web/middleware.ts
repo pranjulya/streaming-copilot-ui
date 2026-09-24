@@ -1,5 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 
+export const NONCE_HEADER = "x-nonce";
+
 export function buildCsp(
   nonce: string,
   options: { allowEval?: boolean } = {},
@@ -43,11 +45,19 @@ export function withSecurityHeaders(
   return response;
 }
 
-export function middleware(_request: NextRequest): NextResponse {
+export function middleware(request: NextRequest): NextResponse {
   const nonce = Buffer.from(crypto.randomUUID()).toString("base64");
-  return withSecurityHeaders(NextResponse.next(), nonce);
+  const isDev = process.env.NODE_ENV !== "production";
+  const csp = buildCsp(nonce, { allowEval: isDev });
+  const requestHeaders = new Headers(request.headers);
+  requestHeaders.set(NONCE_HEADER, nonce);
+  requestHeaders.set("Content-Security-Policy", csp);
+  const response = NextResponse.next({
+    request: { headers: requestHeaders },
+  });
+  return withSecurityHeaders(response, nonce);
 }
 
 export const config = {
-  matcher: "/((?!_next/static|_next/image|favicon.ico|v1|health|metrics).*)",
+  matcher: "/((?!_next/static|_next/image|favicon.ico|v1/|health/|metrics).*)",
 };

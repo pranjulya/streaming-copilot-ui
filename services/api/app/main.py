@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI, Request, Response
 
+from app.api.body_limit import RequestBodyLimitMiddleware
 from app.api.conversations import router as conversations_router
 from app.api.dev import router as dev_router
 from app.api.errors import install_error_handlers
@@ -108,6 +109,7 @@ def create_app(settings: Settings | None = None, provider: LlmProvider | None = 
     install_error_handlers(app)
     install_observability(app, config)
     install_cors(app, config)
+    app.add_middleware(RequestBodyLimitMiddleware, max_bytes=config.max_request_bytes)
     app.include_router(router)
     app.include_router(conversations_router)
     app.include_router(runs_router)
@@ -154,10 +156,13 @@ def install_observability(app: FastAPI, config: Settings) -> None:
             elapsed = asyncio.get_running_loop().time() - started
             ACCEPT_LATENCY_SECONDS.labels(endpoint=_endpoint_label(request)).observe(elapsed)
         response.headers["X-Request-ID"] = request_id
+        problem_code = response.headers.get("x-problem-code", "")
+        if "x-problem-code" in response.headers:
+            del response.headers["x-problem-code"]
         HTTP_REQUESTS_TOTAL.labels(
             endpoint=_endpoint_label(request),
             status=str(response.status_code),
-            code="",
+            code=problem_code,
         ).inc()
         return response
 

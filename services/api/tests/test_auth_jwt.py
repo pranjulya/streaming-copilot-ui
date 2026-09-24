@@ -182,6 +182,35 @@ def test_missing_subject_claim_is_401() -> None:
     assert response.status_code == 401
 
 
+def test_alg_none_and_hs256_tokens_are_401() -> None:
+    now = int(time.time())
+    claims = {
+        "sub": "alice",
+        "iss": ISSUER,
+        "aud": AUDIENCE,
+        "iat": now,
+        "exp": now + 300,
+    }
+    import jwt as pyjwt
+
+    hs = pyjwt.encode(claims, "not-an-rsa-secret", algorithm="HS256")
+    header = (
+        __import__("base64").urlsafe_b64encode(b'{"alg":"none","typ":"JWT"}').rstrip(b"=").decode()
+    )
+    payload = (
+        __import__("base64")
+        .urlsafe_b64encode(__import__("json").dumps(claims).encode())
+        .rstrip(b"=")
+        .decode()
+    )
+    none_token = f"{header}.{payload}."
+    with TestClient(staging_app()) as client:
+        for token in (hs, none_token):
+            response = client.get("/v1/_jwt-probe", headers={"Authorization": f"Bearer {token}"})
+            assert response.status_code == 401
+            assert response.json()["code"] == "unauthenticated"
+
+
 def test_hash_user_id_is_stable_and_never_raw() -> None:
     from app.api.auth_jwt import hash_user_id
 

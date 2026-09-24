@@ -11,8 +11,9 @@
 | `/health/ready` | Private network only; the edge returns 404 |
 | `/metrics` | Private network only; the edge returns 404 |
 
-Streaming routes disable proxy buffering (`flush_interval -1`) so NDJSON is not
-held back by the edge.
+Streaming routes are a `handle @streaming` block **above** `handle /v1/*` so
+Caddy does not buffer NDJSON (`flush_interval -1`). The API process binds
+`api:8000` on the private network; the edge is the only public entry.
 
 ## Secrets
 

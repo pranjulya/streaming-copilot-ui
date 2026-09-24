@@ -1,4 +1,5 @@
 import hashlib
+import hmac
 from collections.abc import Callable
 from typing import Any
 
@@ -25,7 +26,7 @@ class JwtVerifier:
         if self._jwks_client is None:
             url = self._settings.auth_jwt_jwks_url
             assert url is not None
-            self._jwks_client = jwt.PyJWKClient(url, cache_keys=True)
+            self._jwks_client = jwt.PyJWKClient(url, cache_keys=True, timeout=5)
         return self._jwks_client.get_signing_key_from_jwt(token).key
 
     def actor_user_id(self, token: str) -> str:
@@ -61,6 +62,13 @@ def _bearer_token(request: Request) -> str | None:
     return token.strip()
 
 
+def _csrf_match(header: str, cookie: str) -> bool:
+    try:
+        return hmac.compare_digest(header, cookie)
+    except (TypeError, ValueError):
+        return False
+
+
 def _cookie_authenticated_mutation(request: Request, cookie_name: str) -> bool:
     if request.method in ("GET", "HEAD", "OPTIONS"):
         return False
@@ -81,7 +89,7 @@ def authenticate(request: Request, settings: Settings) -> tuple[str, str]:
             if _cookie_authenticated_mutation(request, cookie_name):
                 csrf_header = request.headers.get("x-csrf-token")
                 csrf_cookie = request.cookies.get("csrf_token")
-                if not csrf_header or not csrf_cookie or csrf_header != csrf_cookie:
+                if not csrf_header or not csrf_cookie or not _csrf_match(csrf_header, csrf_cookie):
                     raise AppError(401, "unauthenticated", "CSRF token missing or invalid")
                 origin = request.headers.get("origin")
                 allowed = {item.strip() for item in settings.allowed_origins.split(",")}

@@ -1,8 +1,9 @@
 # Production edge for the Streaming Copilot UI
 #
-# Topology (see docs/configuration.md §7):
+# Topology (see docs/configuration.md "Production edge"):
 #   - the edge serves the Next.js app as the web origin
 #   - /v1 and /health/live are reverse-proxied to the FastAPI service
+#   - the API bind (api:8000) stays on the private network
 #   - /health/ready and /metrics stay on the private network
 #
 # Secrets (XAI_API_KEY, DATABASE_URL, JWT settings) are injected into the API
@@ -17,14 +18,17 @@ copilot.example {
 	encode zstd gzip
 
 	# Streaming routes must not be buffered by the proxy.
+	# This handle sits above handle /v1/* so Caddy does not buffer NDJSON.
 	@streaming {
 		path /v1/conversations/*/responses
 		path /v1/response-runs/*/stream
 		path /v1/response-runs/*/retry
 		path /v1/messages/*/regenerations
 	}
-	reverse_proxy @streaming api:8000 {
-		flush_interval -1
+	handle @streaming {
+		reverse_proxy api:8000 {
+			flush_interval -1
+		}
 	}
 
 	handle /v1/* {

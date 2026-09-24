@@ -27,6 +27,7 @@ Same-site production: the edge serves `apps/web` and reverse-proxies `/v1` and `
 
 - serves the Next.js app as the public web origin;
 - reverse-proxies `/v1/*` and `/health/live` to the API on the same site;
+- keeps the API bind (`api:8000` / `127.0.0.1:8000`) on the private network;
 - returns 404 for `/health/ready` and `/metrics` so they stay on the private network;
 - disables response buffering on the NDJSON routes;
 - receives secrets (`XAI_API_KEY`, `DATABASE_URL`, JWT settings) as injected environment variables, never from files in images.

@@ -1,6 +1,12 @@
 import { describe, expect, test } from "vitest";
+import { NextRequest } from "next/server";
 
-import { buildCsp, STATIC_SECURITY_HEADERS } from "../middleware";
+import {
+  NONCE_HEADER,
+  buildCsp,
+  middleware,
+  STATIC_SECURITY_HEADERS,
+} from "../middleware";
 
 describe("browser security headers", () => {
   test("static headers match docs/security.md exactly", () => {
@@ -33,5 +39,16 @@ describe("browser security headers", () => {
 
   test("nonces differ per request", () => {
     expect(buildCsp("one")).not.toBe(buildCsp("two"));
+  });
+
+  test("middleware forwards a nonce on the request and the CSP header", () => {
+    const response = middleware(
+      new NextRequest(new URL("http://127.0.0.1:3000/c/demo")),
+    );
+    const csp = response.headers.get("Content-Security-Policy") ?? "";
+    const nonce = /nonce-([^'\s]+)/.exec(csp)?.[1];
+    expect(nonce).toBeTruthy();
+    expect(csp).toContain(`'nonce-${nonce}'`);
+    expect(NONCE_HEADER).toBe("x-nonce");
   });
 });
