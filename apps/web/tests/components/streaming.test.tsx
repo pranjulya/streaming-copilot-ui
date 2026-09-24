@@ -10,7 +10,10 @@ import type {
 } from "../../features/chat/api/client";
 import { Transcript } from "../../features/chat/components/Transcript";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 
 const CONVERSATION_ID = "0195f4da-0000-7000-8000-000000000001";
 
@@ -31,7 +34,7 @@ function snapshotWith(assistantText: string | null): ConversationSnapshot {
   ];
   if (assistantText !== null) {
     messages.push({
-      id: "0195f4db-0000-7000-8000-000000000002",
+      id: "a1",
       conversation_id: CONVERSATION_ID,
       role: "assistant",
       content: assistantText,
@@ -152,7 +155,59 @@ describe("Transcript streaming", () => {
     };
     expect(body.client_message_id).toMatch(/[0-9a-f-]{36}/);
     expect(body.content).toBe("Explain backpressure");
-    vi.unstubAllGlobals();
+  });
+
+  test("keeps the live assistant until canonical history has that message", async () => {
+    let releaseCanonical: (value: ConversationSnapshot) => void = () => {};
+    let call = 0;
+    const client = {
+      getConversation: vi.fn().mockImplementation(() => {
+        call += 1;
+        if (call === 1) return Promise.resolve(snapshotWith(null));
+        return new Promise<ConversationSnapshot>((resolve) => {
+          releaseCanonical = resolve;
+        });
+      }),
+    } as unknown as ConversationClient;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          streamingBody([
+            envelope(1, "response.started", {
+              user_message_id: "u1",
+              assistant_message_id: "a1",
+              client_message_id: "client-1",
+              attempt: 1,
+            }),
+            envelope(2, "message.delta", { delta: "Back", content_index: 0 }),
+            envelope(3, "message.delta", {
+              delta: "pressure",
+              content_index: 4,
+            }),
+            envelope(4, "message.completed", {
+              message_id: "a1",
+              content: "Backpressure",
+              finish_reason: "stop",
+            }),
+            envelope(5, "response.completed", { finish_reason: "stop" }),
+          ]),
+          { status: 200, headers: { "content-type": "application/x-ndjson" } },
+        ),
+      ),
+    );
+    render(<Transcript client={client} conversationId={CONVERSATION_ID} />);
+    await screen.findByRole("heading", { name: "Explain backpressure" });
+    await userEvent.type(screen.getByLabelText("Message"), "go{Enter}");
+    expect(await screen.findByText("Backpressure")).toBeTruthy();
+    expect(screen.queryByText("Backpressure is flow control.")).toBeNull();
+    await waitFor(() =>
+      expect(client.getConversation).toHaveBeenCalledTimes(2),
+    );
+    releaseCanonical(snapshotWith("Backpressure is flow control."));
+    expect(
+      await screen.findByText("Backpressure is flow control."),
+    ).toBeTruthy();
   });
 
   test("reports a rejected send as a notice", async () => {
@@ -180,6 +235,51 @@ describe("Transcript streaming", () => {
     await screen.findByRole("heading", { name: "Explain backpressure" });
     await userEvent.type(screen.getByLabelText("Message"), "again{Enter}");
     expect(await screen.findByText(/conversation_busy/)).toBeTruthy();
-    vi.unstubAllGlobals();
+    expect(
+      (screen.getByLabelText("Message") as HTMLTextAreaElement).value,
+    ).toBe("again");
+    expect(
+      screen.queryByText("again", { selector: ".message-text" }),
+    ).toBeNull();
+  });
+
+  test("ignores a snapshot from a previous conversation after navigate", async () => {
+    const otherId = "0195f4da-0000-7000-8000-000000000099";
+    let resolveFirst: (value: ConversationSnapshot) => void = () => {};
+    const first = new Promise<ConversationSnapshot>((resolve) => {
+      resolveFirst = resolve;
+    });
+    const getConversation = vi.fn((id: string) => {
+      if (id === CONVERSATION_ID) return first;
+      return Promise.resolve({
+        ...snapshotWith(null),
+        conversation: {
+          ...snapshotWith(null).conversation,
+          id: otherId,
+          title: "Other chat",
+        },
+      });
+    });
+    const { rerender } = render(
+      <Transcript
+        client={{ getConversation } as unknown as ConversationClient}
+        conversationId={CONVERSATION_ID}
+      />,
+    );
+    rerender(
+      <Transcript
+        client={{ getConversation } as unknown as ConversationClient}
+        conversationId={otherId}
+      />,
+    );
+    expect(
+      await screen.findByRole("heading", { name: "Other chat" }),
+    ).toBeTruthy();
+    resolveFirst(snapshotWith(null));
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("heading", { name: "Explain backpressure" }),
+      ).toBeNull(),
+    );
   });
 });

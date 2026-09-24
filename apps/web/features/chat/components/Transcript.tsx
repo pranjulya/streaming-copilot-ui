@@ -63,10 +63,15 @@ export function Transcript({
   const [notice, setNotice] = useState("");
   const errorRef = useRef<HTMLDivElement>(null);
   const [state, dispatch] = useReducer(chatReducer, initialChatState);
+  const conversationIdRef = useRef(conversationId);
+  conversationIdRef.current = conversationId;
 
   const loadSnapshot = useCallback(async () => {
-    const result = await loadConversationPages(client, conversationId);
-    setSnapshot(result);
+    const requestedId = conversationId;
+    const result = await loadConversationPages(client, requestedId);
+    if (conversationIdRef.current === requestedId) {
+      setSnapshot(result);
+    }
     return result;
   }, [client, conversationId]);
 
@@ -75,10 +80,11 @@ export function Transcript({
     setSnapshot(null);
     setError(null);
     dispatch({ type: "navigate", conversationId });
-    dispatch({ type: "reset", conversationId });
     void loadConversationPages(client, conversationId)
       .then((result) => {
-        if (active) setSnapshot(result);
+        if (active && conversationIdRef.current === conversationId) {
+          setSnapshot(result);
+        }
       })
       .catch((caught: unknown) => {
         if (!active) return;
@@ -118,6 +124,11 @@ export function Transcript({
           onResult: (result) => {
             if (result.kind === "event") {
               dispatch({ type: "event", conversationId, event: result.event });
+            } else if (result.kind === "protocol") {
+              dispatch({ type: "reconcile", conversationId });
+              setNotice(
+                "The stream was interrupted; the canonical answer is shown instead.",
+              );
             } else {
               setNotice(
                 "The stream was interrupted; the canonical answer is shown instead.",
@@ -126,16 +137,20 @@ export function Transcript({
           },
         });
       } catch (caught: unknown) {
+        dispatch({ type: "sendFailed", conversationId });
         setNotice(
           caught instanceof ClientError
             ? `Send failed (${caught.code}).`
             : "Send failed; check your connection.",
         );
+        throw caught instanceof Error ? caught : new Error("Send failed");
       } finally {
-        try {
-          await loadSnapshot();
-        } catch {
-          // The canonical refetch is best-effort after streaming ends.
+        if (conversationIdRef.current === conversationId) {
+          try {
+            await loadSnapshot();
+          } catch {
+            // The canonical refetch is best-effort after streaming ends.
+          }
         }
       }
     },
@@ -174,7 +189,13 @@ export function Transcript({
       (message) => message.client_message_id === turn.clientMessageId,
     );
   const showLiveUser = turn.userContent !== "" && !canonicalHasUserMessage;
-  const showLiveAssistant = ACTIVE_STATUSES.has(turn.status);
+  const canonicalHasAssistant =
+    turn.assistantMessageId !== null &&
+    visible.some((message) => message.id === turn.assistantMessageId);
+  const showLiveAssistant =
+    turn.assistantContent !== "" &&
+    !canonicalHasAssistant &&
+    (ACTIVE_STATUSES.has(turn.status) || turn.status === "completed");
 
   const liveMessage = (role: Message["role"], content: string): Message => ({
     id: `live-${role}`,
@@ -195,11 +216,13 @@ export function Transcript({
       ? "streaming"
       : turn.status === "stopping"
         ? "cancelling"
-        : activeRunStatus === "queued" ||
-            activeRunStatus === "streaming" ||
-            activeRunStatus === "cancelling"
-          ? activeRunStatus
-          : null;
+        : turn.status === "submitting" || turn.status === "connecting"
+          ? "queued"
+          : activeRunStatus === "queued" ||
+              activeRunStatus === "streaming" ||
+              activeRunStatus === "cancelling"
+            ? activeRunStatus
+            : null;
 
   return (
     <section className="transcript" aria-label="Conversation">
@@ -226,7 +249,10 @@ export function Transcript({
           ) : null}
         </ol>
       )}
-      <Composer onSubmit={(content) => void submit(content)} />
+      <Composer
+        busy={ACTIVE_STATUSES.has(turn.status)}
+        onSubmit={(content) => submit(content)}
+      />
       <p className="composer-notice" role="status">
         {notice}
       </p>

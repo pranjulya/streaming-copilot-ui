@@ -45,7 +45,9 @@ export async function* parseNdjson(
         const line = buffer.slice(0, newline).replace(/\r$/, "");
         buffer = buffer.slice(newline + 1);
         if (line.trim().length > 0) {
-          yield parseLine(line);
+          const result = parseLine(line);
+          yield result;
+          if (result.kind === "protocol") return;
         }
         newline = buffer.indexOf("\n");
       }
@@ -53,7 +55,8 @@ export async function* parseNdjson(
     buffer += decoder.decode();
     const tail = buffer.replace(/\r$/, "");
     if (tail.trim().length > 0) {
-      yield parseLine(tail);
+      const result = parseLine(tail);
+      yield result;
     }
   } finally {
     signal.removeEventListener("abort", onAbort);

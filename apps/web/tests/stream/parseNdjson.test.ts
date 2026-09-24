@@ -122,6 +122,17 @@ describe("parseNdjson", () => {
     expect(results[0]).toMatchObject({ kind: "protocol" });
   });
 
+  test("stops after an unsupported major version", async () => {
+    const body =
+      JSON.stringify(envelope({ protocol_version: "2.0" })) +
+      "\n" +
+      JSON.stringify(envelope({ sequence: 2 })) +
+      "\n";
+    const results = await collect([encoder.encode(body)]);
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({ kind: "protocol" });
+  });
+
   test("yields unknown event types for the reducer to ignore", async () => {
     const results = await collect([
       encoder.encode(`${JSON.stringify(envelope({ type: "tool.started" }))}\n`),

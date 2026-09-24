@@ -23,7 +23,8 @@ export default defineConfig({
         APP_ENV: "development",
         DATABASE_URL:
           process.env.TEST_DATABASE_URL ??
-          "postgresql+asyncpg://copilot:copilot@127.0.0.1:5433/copilot",
+          "postgresql+asyncpg://copilot:copilot@127.0.0.1:5432/copilot",
+        XAI_API_KEY: "",
       },
     },
     {

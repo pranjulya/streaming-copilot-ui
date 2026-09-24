@@ -171,6 +171,110 @@ describe("chatReducer", () => {
     const turn = state.turnsByConversation[CONVERSATION];
     expect(turn.status).toBe("reconciling");
     expect(turn.assistantContent).toBe("");
+    expect(turn.lastSequence).toBe(2);
+  });
+
+  test("message.completed still applies after a content_index mismatch", () => {
+    const state = reduce([
+      {
+        type: "optimistic",
+        conversationId: CONVERSATION,
+        clientMessageId: "client-1",
+        content: "q",
+      },
+      { type: "event", conversationId: CONVERSATION, event: started() },
+      {
+        type: "event",
+        conversationId: CONVERSATION,
+        event: delta(2, "abc", 5),
+      },
+      {
+        type: "event",
+        conversationId: CONVERSATION,
+        event: event({
+          sequence: 3,
+          type: "message.completed",
+          data: {
+            message_id: "assistant-1",
+            content: "canonical",
+            finish_reason: "stop",
+          },
+        }),
+      },
+    ]);
+    expect(state.turnsByConversation[CONVERSATION].assistantContent).toBe(
+      "canonical",
+    );
+    expect(state.turnsByConversation[CONVERSATION].status).toBe("reconciling");
+  });
+
+  test("snapshot copies ids without String(null)", () => {
+    const state = reduce([
+      {
+        type: "optimistic",
+        conversationId: CONVERSATION,
+        clientMessageId: "client-1",
+        content: "q",
+      },
+      {
+        type: "event",
+        conversationId: CONVERSATION,
+        event: event({
+          sequence: 3,
+          type: "response.snapshot",
+          data: {
+            status: "streaming",
+            content: "so far",
+            last_sequence: 3,
+            user_message_id: "user-1",
+            assistant_message_id: "assistant-1",
+            client_message_id: "client-1",
+          },
+        }),
+      },
+    ]);
+    const turn = state.turnsByConversation[CONVERSATION];
+    expect(turn.userMessageId).toBe("user-1");
+    expect(turn.assistantMessageId).toBe("assistant-1");
+    expect(turn.clientMessageId).toBe("client-1");
+    expect(turn.userMessageId).not.toBe("null");
+  });
+
+  test("response.started missing ids keep prior values", () => {
+    const state = reduce([
+      {
+        type: "optimistic",
+        conversationId: CONVERSATION,
+        clientMessageId: "client-1",
+        content: "q",
+      },
+      {
+        type: "event",
+        conversationId: CONVERSATION,
+        event: event({
+          sequence: 1,
+          type: "response.started",
+          data: { attempt: 1 },
+        }),
+      },
+    ]);
+    const turn = state.turnsByConversation[CONVERSATION];
+    expect(turn.clientMessageId).toBe("client-1");
+    expect(turn.userMessageId).toBeNull();
+    expect(turn.assistantMessageId).toBeNull();
+  });
+
+  test("sendFailed clears the optimistic turn", () => {
+    const state = reduce([
+      {
+        type: "optimistic",
+        conversationId: CONVERSATION,
+        clientMessageId: "client-1",
+        content: "q",
+      },
+      { type: "sendFailed", conversationId: CONVERSATION },
+    ]);
+    expect(state.turnsByConversation[CONVERSATION]).toEqual(emptyTurn());
   });
 
   test("message.completed replaces accumulated content", () => {

@@ -40,7 +40,9 @@ export type ChatAction =
     }
   | { type: "event"; conversationId: string; event: StreamEvent }
   | { type: "navigate"; conversationId: string }
-  | { type: "reset"; conversationId: string };
+  | { type: "reset"; conversationId: string }
+  | { type: "sendFailed"; conversationId: string }
+  | { type: "reconcile"; conversationId: string };
 
 export function emptyTurn(): TurnState {
   return {
@@ -66,6 +68,17 @@ function contentIndex(content: string): number {
   return Array.from(content).length;
 }
 
+function optionalString(
+  value: unknown,
+  fallback: string | null,
+): string | null {
+  return typeof value === "string" ? value : fallback;
+}
+
+function optionalNumber(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
 export function chatReducer(state: ChatState, action: ChatAction): ChatState {
   switch (action.type) {
     case "navigate":
@@ -89,6 +102,13 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         },
       };
     }
+    case "sendFailed":
+      return withTurn(state, action.conversationId, () => emptyTurn());
+    case "reconcile":
+      return withTurn(state, action.conversationId, (turn) => ({
+        ...turn,
+        status: "reconciling",
+      }));
     case "event":
       return applyEvent(state, action.conversationId, action.event);
     default:
@@ -121,20 +141,40 @@ function applyEvent(
     return withTurn(state, conversationId, (turn) => ({
       ...turn,
       status: snapshotStatus(event),
-      assistantContent: String(event.data.content ?? turn.assistantContent),
-      lastSequence: Number(event.data.last_sequence ?? turn.lastSequence),
+      assistantContent:
+        typeof event.data.content === "string"
+          ? event.data.content
+          : turn.assistantContent,
+      lastSequence: optionalNumber(event.data.last_sequence, turn.lastSequence),
+      userMessageId: optionalString(
+        event.data.user_message_id,
+        turn.userMessageId,
+      ),
+      assistantMessageId: optionalString(
+        event.data.assistant_message_id,
+        turn.assistantMessageId,
+      ),
+      clientMessageId: optionalString(
+        event.data.client_message_id,
+        turn.clientMessageId,
+      ),
     }));
   }
   if (event.type === "response.started") {
     return withTurn(state, conversationId, (turn) => ({
       ...turn,
       status: "streaming",
-      userMessageId: String(event.data.user_message_id ?? turn.userMessageId),
-      assistantMessageId: String(
-        event.data.assistant_message_id ?? turn.assistantMessageId,
+      userMessageId: optionalString(
+        event.data.user_message_id,
+        turn.userMessageId,
       ),
-      clientMessageId: String(
-        event.data.client_message_id ?? turn.clientMessageId,
+      assistantMessageId: optionalString(
+        event.data.assistant_message_id,
+        turn.assistantMessageId,
+      ),
+      clientMessageId: optionalString(
+        event.data.client_message_id,
+        turn.clientMessageId,
       ),
       runId: event.run_id,
       lastSequence: event.sequence,
@@ -173,6 +213,7 @@ function applyEvent(
         return withTurn(state, conversationId, (current) => ({
           ...current,
           status: "reconciling",
+          lastSequence: event.sequence,
         }));
       }
       return withTurn(state, conversationId, (current) => ({
