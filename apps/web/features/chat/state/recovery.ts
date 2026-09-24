@@ -11,8 +11,16 @@ export type TurnKind =
 
 export type StreamedTurn =
   | { outcome: "streamed" }
+  | { outcome: "incomplete"; runId: string | null }
+  | { outcome: "aborted" }
   | { outcome: "rejected"; error: unknown }
   | { outcome: "network-unknown"; error: unknown };
+
+const TERMINAL_EVENTS = new Set([
+  "response.completed",
+  "response.cancelled",
+  "response.failed",
+]);
 
 export function supportsStreaming(): boolean {
   if (
@@ -69,6 +77,15 @@ export async function streamTurn(options: {
   onResult: (result: ParseResult) => void;
 }): Promise<StreamedTurn> {
   const { turn } = options;
+  let sawTerminal = false;
+  let runId: string | null = turn.kind === "retry" ? turn.runId : null;
+  const onResult = (result: ParseResult) => {
+    if (result.kind === "event") {
+      runId = result.event.run_id;
+      if (TERMINAL_EVENTS.has(result.event.type)) sawTerminal = true;
+    }
+    options.onResult(result);
+  };
   try {
     if (turn.kind === "create") {
       await startResponse({
@@ -79,7 +96,7 @@ export async function streamTurn(options: {
         baseUrl: options.baseUrl,
         fetchImpl: options.fetchImpl,
         signal: options.signal,
-        onResult: options.onResult,
+        onResult,
       });
     } else {
       const path =
@@ -91,11 +108,17 @@ export async function streamTurn(options: {
         options.idempotencyKey,
         options.fetchImpl,
         options.signal,
-        options.onResult,
+        onResult,
       );
+    }
+    if (!sawTerminal) {
+      return { outcome: "incomplete", runId };
     }
     return { outcome: "streamed" };
   } catch (error) {
+    if (isUserAbort(error)) {
+      return { outcome: "aborted" };
+    }
     if (isNetworkFailure(error)) {
       return { outcome: "network-unknown", error };
     }

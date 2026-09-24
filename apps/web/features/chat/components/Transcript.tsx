@@ -17,6 +17,7 @@ import {
   pollRunUntilTerminal,
   streamTurn,
   supportsStreaming,
+  terminalStatus,
   type TurnKind,
 } from "../state/recovery";
 import type { ParseResult } from "../stream/parseNdjson";
@@ -80,6 +81,8 @@ export function Transcript({
   const conversationIdRef = useRef(conversationId);
   conversationIdRef.current = conversationId;
   const controllerRef = useRef<AbortController | null>(null);
+  const followedRunRef = useRef<string | null>(null);
+  const seenReconcileRef = useRef<string | null>(null);
   const needsRecoveryRef = useRef(false);
   const stateRef = useRef(state);
   stateRef.current = state;
@@ -130,12 +133,8 @@ export function Transcript({
     (result: ParseResult) => {
       if (result.kind === "event") {
         dispatch({ type: "event", conversationId, event: result.event });
-      } else if (result.kind === "protocol") {
-        dispatch({ type: "reconcile", conversationId });
-        setNotice(
-          "The stream was interrupted; the canonical answer is shown instead.",
-        );
       } else {
+        dispatch({ type: "reconcile", conversationId });
         setNotice(
           "The stream was interrupted; the canonical answer is shown instead.",
         );
@@ -144,8 +143,10 @@ export function Transcript({
     [conversationId],
   );
 
-  const currentTurn = () =>
-    stateRef.current.turnsByConversation[conversationId] ?? emptyTurn();
+  const currentTurn = useCallback(
+    () => stateRef.current.turnsByConversation[conversationId] ?? emptyTurn(),
+    [conversationId],
+  );
 
   const runStreamedTurn = useCallback(
     async (turn: TurnKind, clientMessageId: string, idempotencyKey: string) => {
@@ -199,6 +200,31 @@ export function Transcript({
       });
       const turn: TurnKind = { kind: "create", conversationId, content };
       let result = await runStreamedTurn(turn, clientMessageId, idempotencyKey);
+      if (result.outcome === "aborted") {
+        return;
+      }
+      if (result.outcome === "incomplete") {
+        dispatch({ type: "reconcile", conversationId });
+        const runId = result.runId ?? currentTurn().runId;
+        if (runId !== null) {
+          if (supportsStreaming()) {
+            await attachToActiveRun(runId, currentTurn().lastSequence);
+          } else {
+            const settled = await pollRunUntilTerminal(client, runId, {
+              delayMs: 200,
+              attempts: 150,
+            });
+            if (settled) {
+              dispatch({
+                type: "canonical-status",
+                conversationId,
+                status: settled.status,
+                content: settled.partial_content,
+              });
+            }
+          }
+        }
+      }
       if (result.outcome === "network-unknown") {
         setNotice("Connection lost; checking whether your message was saved…");
         result = await runStreamedTurn(turn, clientMessageId, idempotencyKey);
@@ -254,7 +280,14 @@ export function Transcript({
         }
       }
     },
-    [attachToActiveRun, client, conversationId, loadSnapshot, runStreamedTurn],
+    [
+      attachToActiveRun,
+      client,
+      conversationId,
+      currentTurn,
+      loadSnapshot,
+      runStreamedTurn,
+    ],
   );
 
   const stop = useCallback(async () => {
@@ -262,27 +295,34 @@ export function Transcript({
     dispatch({ type: "stop-requested", conversationId });
     const runId = currentTurn().runId;
     if (runId !== null) {
+      const cancel = new AbortController();
+      const timer = window.setTimeout(() => cancel.abort(), 4000);
       try {
-        await client.cancelRun(runId);
+        await client.cancelRun(runId, { signal: cancel.signal });
       } catch {
-        // A terminal run is a successful no-op; network errors fall through to polling.
+        // A terminal run is a successful no-op; timeout falls through to polling.
+      } finally {
+        window.clearTimeout(timer);
       }
       const settled = await pollRunUntilTerminal(client, runId, {
         delayMs: 300,
         attempts: 20,
       });
-      dispatch({
-        type: "canonical-status",
-        conversationId,
-        status: settled?.status ?? "failed",
-      });
+      if (settled) {
+        dispatch({
+          type: "canonical-status",
+          conversationId,
+          status: settled.status,
+          content: settled.partial_content,
+        });
+      }
     }
     try {
       await loadSnapshot();
     } catch {
       // Best-effort.
     }
-  }, [client, conversationId, loadSnapshot]);
+  }, [client, conversationId, currentTurn, loadSnapshot]);
 
   const retry = useCallback(async () => {
     const runId = currentTurn().runId;
@@ -293,7 +333,12 @@ export function Transcript({
       currentTurn().clientMessageId ?? crypto.randomUUID(),
       crypto.randomUUID(),
     );
-    if (result.outcome !== "streamed") {
+    if (result.outcome === "incomplete" && result.runId !== null) {
+      await attachToActiveRun(result.runId, currentTurn().lastSequence);
+    } else if (
+      result.outcome === "rejected" ||
+      result.outcome === "network-unknown"
+    ) {
       setNotice(
         result.error instanceof ClientError
           ? `Retry failed (${result.error.code}).`
@@ -305,7 +350,13 @@ export function Transcript({
     } catch {
       // Best-effort.
     }
-  }, [conversationId, loadSnapshot, runStreamedTurn]);
+  }, [
+    attachToActiveRun,
+    conversationId,
+    currentTurn,
+    loadSnapshot,
+    runStreamedTurn,
+  ]);
 
   const regenerate = useCallback(
     async (userMessageId: string) => {
@@ -315,7 +366,12 @@ export function Transcript({
         crypto.randomUUID(),
         crypto.randomUUID(),
       );
-      if (result.outcome !== "streamed") {
+      if (result.outcome === "incomplete" && result.runId !== null) {
+        await attachToActiveRun(result.runId, currentTurn().lastSequence);
+      } else if (
+        result.outcome === "rejected" ||
+        result.outcome === "network-unknown"
+      ) {
         setNotice(
           result.error instanceof ClientError
             ? `Regenerate failed (${result.error.code}).`
@@ -328,7 +384,13 @@ export function Transcript({
         // Best-effort.
       }
     },
-    [conversationId, loadSnapshot, runStreamedTurn],
+    [
+      attachToActiveRun,
+      conversationId,
+      currentTurn,
+      loadSnapshot,
+      runStreamedTurn,
+    ],
   );
 
   const recoverWhenOnline = useCallback(async () => {
@@ -347,13 +409,45 @@ export function Transcript({
     } catch {
       needsRecoveryRef.current = true;
     }
-  }, [attachToActiveRun, client, conversationId, loadSnapshot]);
+  }, [attachToActiveRun, client, conversationId, currentTurn, loadSnapshot]);
 
   useEffect(() => {
     const onOnline = () => void recoverWhenOnline();
     window.addEventListener("online", onOnline);
     return () => window.removeEventListener("online", onOnline);
   }, [recoverWhenOnline]);
+
+  useEffect(() => {
+    const run = snapshot?.active_run;
+    if (run == null || terminalStatus(run.status)) return;
+    if (followedRunRef.current === run.id) return;
+    followedRunRef.current = run.id;
+    void attachToActiveRun(
+      run.id,
+      currentTurn().lastSequence || run.last_sequence,
+    );
+  }, [attachToActiveRun, currentTurn, snapshot]);
+
+  const turnForReconcile =
+    state.turnsByConversation[conversationId] ?? emptyTurn();
+  const reconcileKey =
+    turnForReconcile.status === "reconciling" && turnForReconcile.runId !== null
+      ? `${turnForReconcile.runId}:${turnForReconcile.lastSequence}`
+      : null;
+  useEffect(() => {
+    if (reconcileKey === null || seenReconcileRef.current === reconcileKey) {
+      return;
+    }
+    seenReconcileRef.current = reconcileKey;
+    const runId = turnForReconcile.runId;
+    if (runId === null) return;
+    void attachToActiveRun(runId, turnForReconcile.lastSequence);
+  }, [
+    attachToActiveRun,
+    reconcileKey,
+    turnForReconcile.lastSequence,
+    turnForReconcile.runId,
+  ]);
 
   if (error !== null) {
     return (
@@ -398,6 +492,9 @@ export function Transcript({
     .reverse()
     .find((message) => message.role === "assistant");
   const regenerateTarget = lastAssistant?.in_reply_to_id ?? null;
+  const displayMessages = showLiveAssistant
+    ? visible.filter((message) => message.id !== lastAssistant?.id)
+    : visible;
 
   const liveMessage = (role: Message["role"], content: string): Message => ({
     id: `live-${role}`,
@@ -434,7 +531,7 @@ export function Transcript({
         <p className="empty-transcript">No messages yet.</p>
       ) : (
         <ol className="transcript-list" role="list">
-          {visible.map((message) => (
+          {displayMessages.map((message) => (
             <MessageBubble key={message.id} message={message} />
           ))}
           {showLiveUser ? (

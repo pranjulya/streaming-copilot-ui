@@ -97,5 +97,6 @@ def create_app(settings: Settings | None = None, provider: LlmProvider | None = 
     app.include_router(conversations_router)
     app.include_router(runs_router)
     app.include_router(responses_router)
-    app.include_router(dev_router)
+    if config.app_env == "development":
+        app.include_router(dev_router)
     return app

@@ -130,11 +130,13 @@ export async function problemFromResponse(
   } catch {
     problem = {};
   }
+  const { code, title, diagnostic_id: diagnosticId, ...extensions } = problem;
   return new ClientError(
     response.status,
-    problem.code ?? "internal_error",
-    problem.title ?? fallbackTitle,
-    problem.diagnostic_id ?? null,
+    code ?? "internal_error",
+    title ?? fallbackTitle,
+    diagnosticId ?? null,
+    extensions,
   );
 }
 

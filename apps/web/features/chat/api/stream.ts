@@ -36,12 +36,7 @@ export async function startResponse(
     throw await problemFromResponse(response);
   }
   if (response.body === null) {
-    throw new ClientError(
-      response.status,
-      "stream_protocol_error",
-      "Empty stream",
-      null,
-    );
+    return;
   }
   for await (const result of parseNdjson(response.body, options.signal)) {
     options.onResult(result);

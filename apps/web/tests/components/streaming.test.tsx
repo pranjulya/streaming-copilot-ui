@@ -304,7 +304,6 @@ describe("Transcript streaming", () => {
     );
   });
 
-
   test("a busy conversation follows the active run instead of duplicating", async () => {
     const client = {
       getConversation: vi
@@ -365,5 +364,49 @@ describe("Transcript streaming", () => {
       String(call[0]).includes("/response-runs/active-run-1/stream"),
     );
     expect(followCall).toBeTruthy();
+  });
+
+  test("mount follows a non-terminal active run from the snapshot", async () => {
+    const client = {
+      getConversation: vi.fn().mockResolvedValue({
+        ...snapshotWith(null),
+        active_run: {
+          id: "active-run-2",
+          conversation_id: CONVERSATION_ID,
+          user_message_id: "u1",
+          assistant_message_id: "a1",
+          status: "streaming" as const,
+          attempt: 1,
+          last_sequence: 2,
+          cancel_requested_at: null,
+          error_code: null,
+          diagnostic_id: null,
+          partial_content: "Hi",
+          created_at: "2026-09-09T10:30:00.000Z",
+          completed_at: null,
+        },
+      }),
+    } as unknown as ConversationClient;
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(
+          streamingBody([
+            envelope(3, "message.delta", { delta: " there", content_index: 2 }),
+            envelope(4, "response.completed", { finish_reason: "stop" }),
+          ]),
+          { status: 200, headers: { "content-type": "application/x-ndjson" } },
+        ),
+      );
+    vi.stubGlobal("fetch", fetchImpl);
+    render(<Transcript client={client} conversationId={CONVERSATION_ID} />);
+    await screen.findByRole("heading", { name: "Explain backpressure" });
+    await waitFor(() =>
+      expect(
+        fetchImpl.mock.calls.some((call) =>
+          String(call[0]).includes("/response-runs/active-run-2/stream"),
+        ),
+      ).toBe(true),
+    );
   });
 });

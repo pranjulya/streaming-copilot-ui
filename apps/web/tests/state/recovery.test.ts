@@ -139,4 +139,56 @@ describe("recovery helpers", () => {
   test("supportsStreaming reflects the runtime", () => {
     expect(supportsStreaming()).toBe(true);
   });
+
+  test("streamTurn is incomplete when the NDJSON body ends without a terminal event", async () => {
+    const { streamTurn } = await import("../../features/chat/state/recovery");
+    const encoder = new TextEncoder();
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(
+        encoder.encode(
+          `${JSON.stringify({
+            protocol_version: "1.0",
+            sequence: 1,
+            event_id: "e1",
+            type: "response.started",
+            occurred_at: "2026-09-09T10:30:12.481Z",
+            conversation_id: "c1",
+            run_id: "run-1",
+            data: { attempt: 1 },
+          })}\n`,
+        ),
+        { status: 200, headers: { "content-type": "application/x-ndjson" } },
+      ),
+    );
+    const result = await streamTurn({
+      client: {} as ConversationClient,
+      turn: { kind: "create", conversationId: "c1", content: "hi" },
+      clientMessageId: "cmid",
+      idempotencyKey: "key",
+      fetchImpl,
+      signal: new AbortController().signal,
+      onResult: () => {},
+    });
+    expect(result.outcome).toBe("incomplete");
+    if (result.outcome === "incomplete") {
+      expect(result.runId).toBe("run-1");
+    }
+  });
+
+  test("streamTurn treats user abort as aborted, not rejected", async () => {
+    const { streamTurn } = await import("../../features/chat/state/recovery");
+    const abort = new Error("aborted");
+    abort.name = "AbortError";
+    const fetchImpl = vi.fn().mockRejectedValue(abort);
+    const result = await streamTurn({
+      client: {} as ConversationClient,
+      turn: { kind: "create", conversationId: "c1", content: "hi" },
+      clientMessageId: "cmid",
+      idempotencyKey: "key",
+      fetchImpl,
+      signal: new AbortController().signal,
+      onResult: () => {},
+    });
+    expect(result.outcome).toBe("aborted");
+  });
 });

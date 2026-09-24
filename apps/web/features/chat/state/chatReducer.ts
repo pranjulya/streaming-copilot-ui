@@ -123,12 +123,25 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         status: turn.status === "completed" ? turn.status : "stopping",
       }));
     case "canonical-status":
-      return withTurn(state, action.conversationId, (turn) => ({
-        ...turn,
-        status: action.status,
-        assistantContent:
-          action.content === undefined ? turn.assistantContent : action.content,
-      }));
+      return withTurn(state, action.conversationId, (turn) => {
+        if (turn.status === "completed") {
+          return {
+            ...turn,
+            assistantContent:
+              action.content === undefined
+                ? turn.assistantContent
+                : action.content,
+          };
+        }
+        return {
+          ...turn,
+          status: action.status,
+          assistantContent:
+            action.content === undefined
+              ? turn.assistantContent
+              : action.content,
+        };
+      });
     case "restart-turn":
       return withTurn(state, action.conversationId, (turn) => ({
         ...emptyTurn(),
@@ -294,7 +307,7 @@ function applyEvent(
   if (event.type === "response.cancelled") {
     return withTurn(state, conversationId, (current) =>
       advance(current, event.sequence, {
-        status: "cancelled",
+        status: current.status === "completed" ? "completed" : "cancelled",
         assistantContent:
           optionalString(event.data.content, current.assistantContent) ??
           current.assistantContent,

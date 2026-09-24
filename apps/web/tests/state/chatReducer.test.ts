@@ -264,6 +264,64 @@ describe("chatReducer", () => {
     expect(turn.assistantMessageId).toBeNull();
   });
 
+  test("canonical-status does not overwrite completed", () => {
+    const state = reduce([
+      {
+        type: "optimistic",
+        conversationId: CONVERSATION,
+        clientMessageId: "client-1",
+        content: "q",
+      },
+      { type: "event", conversationId: CONVERSATION, event: started() },
+      {
+        type: "event",
+        conversationId: CONVERSATION,
+        event: event({
+          sequence: 2,
+          type: "response.completed",
+          data: { finish_reason: "stop" },
+        }),
+      },
+      {
+        type: "canonical-status",
+        conversationId: CONVERSATION,
+        status: "cancelled",
+      },
+    ]);
+    expect(state.turnsByConversation[CONVERSATION].status).toBe("completed");
+  });
+
+  test("response.cancelled does not overwrite completed", () => {
+    const state = reduce([
+      {
+        type: "optimistic",
+        conversationId: CONVERSATION,
+        clientMessageId: "client-1",
+        content: "q",
+      },
+      { type: "event", conversationId: CONVERSATION, event: started() },
+      {
+        type: "event",
+        conversationId: CONVERSATION,
+        event: event({
+          sequence: 2,
+          type: "response.completed",
+          data: { finish_reason: "stop" },
+        }),
+      },
+      {
+        type: "event",
+        conversationId: CONVERSATION,
+        event: event({
+          sequence: 3,
+          type: "response.cancelled",
+          data: { reason: "user_requested" },
+        }),
+      },
+    ]);
+    expect(state.turnsByConversation[CONVERSATION].status).toBe("completed");
+  });
+
   test("sendFailed clears the optimistic turn", () => {
     const state = reduce([
       {
