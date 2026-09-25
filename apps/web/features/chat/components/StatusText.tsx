@@ -7,7 +7,7 @@ const LABELS: Record<RunStatus, string> = {
 };
 
 export function StatusText({ status }: { status: RunStatus | null }) {
-  const text = status === null ? "" : (LABELS[status] ?? "");
+  const text = status === null ? "" : LABELS[status];
   return (
     <p className="status-text" role="status">
       {status === "streaming" ? (

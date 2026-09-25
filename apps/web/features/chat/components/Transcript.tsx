@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import type { ConversationSnapshot, ConversationClient } from "../api/client";
 import { ClientError } from "../api/client";
@@ -18,6 +18,7 @@ export function Transcript({
   const [snapshot, setSnapshot] = useState<ConversationSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState("");
+  const errorRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let active = true;
@@ -60,10 +61,19 @@ export function Transcript({
     };
   }, [client, conversationId]);
 
+  useEffect(() => {
+    if (error !== null) errorRef.current?.focus();
+  }, [error]);
+
   if (error !== null) {
     return (
       <section className="transcript" aria-label="Conversation">
-        <div role="alert" className="error-summary">
+        <div
+          role="alert"
+          className="error-summary"
+          ref={errorRef}
+          tabIndex={-1}
+        >
           {error}
         </div>
       </section>

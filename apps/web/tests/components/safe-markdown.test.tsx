@@ -38,11 +38,19 @@ describe("SafeMarkdown", () => {
     expect(container.querySelector("script")).toBeNull();
     expect(container.querySelector("iframe")).toBeNull();
     expect(container.querySelector("style")).toBeNull();
+    // The corpus contains a `![x](javascript:…)` markdown image, so an <img>
+    // must be produced; rehype-sanitize then drops the disallowed `src`
+    // protocol, leaving the element with no `src` attribute at all.
+    expect(container.querySelector("img")).not.toBeNull();
+    expect(container.querySelector("img[src]")).toBeNull();
+    const safeUrl = /^(https?:|mailto:)/i;
     for (const image of Array.from(container.querySelectorAll("img"))) {
-      expect(image.getAttribute("src") ?? "").not.toMatch(/^\s*javascript:/i);
+      const src = image.getAttribute("src");
+      expect(src === null || safeUrl.test(src)).toBe(true);
     }
     for (const anchor of Array.from(container.querySelectorAll("a"))) {
-      expect(anchor.getAttribute("href") ?? "").not.toMatch(/^\s*javascript:/i);
+      const href = anchor.getAttribute("href");
+      expect(href === null || safeUrl.test(href)).toBe(true);
     }
   });
 

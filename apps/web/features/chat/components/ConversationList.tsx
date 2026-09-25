@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { Conversation, ConversationClient } from "../api/client";
-import { ClientError } from "../api/client";
+import { ClientError, newIdempotencyKey } from "../api/client";
 
 type ListState =
   | { kind: "loading" }
@@ -37,8 +37,13 @@ export function ConversationList({ client }: { client: ConversationClient }) {
   const [renameDraft, setRenameDraft] = useState("");
   const [notice, setNotice] = useState("");
   const [actionError, setActionError] = useState<string | null>(null);
+  const [refocusId, setRefocusId] = useState<string | null>(null);
   const loadGeneration = useRef(0);
   const pendingCreated = useRef<Conversation[]>([]);
+  const idempotencyKeys = useRef(new Map<string, string>());
+  const listRef = useRef<HTMLElement>(null);
+  const actionAlertRef = useRef<HTMLDivElement>(null);
+  const loadAlertRef = useRef<HTMLDivElement>(null);
 
   const load = useCallback(
     async (options: {
@@ -87,6 +92,36 @@ export function ConversationList({ client }: { client: ConversationClient }) {
     void load({ archived: showArchived });
   }, [load, showArchived]);
 
+  // A key is minted once per logical mutation and kept until it succeeds, so a
+  // retry of the same request replays idempotently instead of running twice.
+  function mutationKey(operation: string): string {
+    const existing = idempotencyKeys.current.get(operation);
+    if (existing !== undefined) return existing;
+    const key = newIdempotencyKey();
+    idempotencyKeys.current.set(operation, key);
+    return key;
+  }
+
+  function releaseMutationKey(operation: string): void {
+    idempotencyKeys.current.delete(operation);
+  }
+
+  useEffect(() => {
+    if (actionError !== null) actionAlertRef.current?.focus();
+  }, [actionError]);
+
+  useEffect(() => {
+    if (state.kind === "error") loadAlertRef.current?.focus();
+  }, [state]);
+
+  useEffect(() => {
+    if (refocusId === null) return;
+    listRef.current
+      ?.querySelector<HTMLElement>(`[data-conversation-id="${refocusId}"]`)
+      ?.focus();
+    setRefocusId(null);
+  }, [refocusId]);
+
   function replaceItem(updated: Conversation) {
     setState((current) =>
       current.kind === "ready"
@@ -102,13 +137,18 @@ export function ConversationList({ client }: { client: ConversationClient }) {
 
   async function archive(conversation: Conversation) {
     if (!window.confirm(`Archive “${conversation.title}”?`)) return;
+    const operation = `archive:${conversation.id}`;
     try {
       setActionError(null);
-      const updated = await client.patchConversation(conversation.id, {
-        archived: true,
-      });
+      const updated = await client.patchConversation(
+        conversation.id,
+        { archived: true },
+        { idempotencyKey: mutationKey(operation) },
+      );
+      releaseMutationKey(operation);
       setNotice(`Archived “${conversation.title}”.`);
       replaceItem(updated);
+      setRefocusId(conversation.id);
     } catch (caught: unknown) {
       setActionError(
         problemMessage(caught, "The conversation could not be archived."),
@@ -117,13 +157,18 @@ export function ConversationList({ client }: { client: ConversationClient }) {
   }
 
   async function undoArchive(conversation: Conversation) {
+    const operation = `restore:${conversation.id}`;
     try {
       setActionError(null);
-      const updated = await client.patchConversation(conversation.id, {
-        archived: false,
-      });
+      const updated = await client.patchConversation(
+        conversation.id,
+        { archived: false },
+        { idempotencyKey: mutationKey(operation) },
+      );
+      releaseMutationKey(operation);
       setNotice(`Restored “${conversation.title}”.`);
       replaceItem(updated);
+      setRefocusId(conversation.id);
     } catch (caught: unknown) {
       setActionError(
         problemMessage(caught, "The conversation could not be restored."),
@@ -134,14 +179,19 @@ export function ConversationList({ client }: { client: ConversationClient }) {
   async function saveRename(conversation: Conversation) {
     const title = renameDraft.trim();
     if (!title) return;
+    const operation = `rename:${conversation.id}:${title}`;
     try {
       setActionError(null);
-      const updated = await client.patchConversation(conversation.id, {
-        title,
-      });
+      const updated = await client.patchConversation(
+        conversation.id,
+        { title },
+        { idempotencyKey: mutationKey(operation) },
+      );
+      releaseMutationKey(operation);
       setRenamingId(null);
       setRenameDraft("");
       replaceItem(updated);
+      setRefocusId(conversation.id);
     } catch (caught: unknown) {
       setActionError(
         problemMessage(caught, "The conversation could not be renamed."),
@@ -150,9 +200,13 @@ export function ConversationList({ client }: { client: ConversationClient }) {
   }
 
   async function createConversation() {
+    const operation = "create";
     try {
       setActionError(null);
-      const conversation = await client.createConversation();
+      const conversation = await client.createConversation(undefined, {
+        idempotencyKey: mutationKey(operation),
+      });
+      releaseMutationKey(operation);
       setState((current) => {
         if (current.kind === "ready") {
           return {
@@ -174,7 +228,11 @@ export function ConversationList({ client }: { client: ConversationClient }) {
   }
 
   return (
-    <section className="conversation-list" aria-label="Conversations">
+    <section
+      className="conversation-list"
+      aria-label="Conversations"
+      ref={listRef}
+    >
       <div className="list-toolbar">
         <button type="button" onClick={() => void createConversation()}>
           New conversation
@@ -192,7 +250,12 @@ export function ConversationList({ client }: { client: ConversationClient }) {
         {notice}
       </p>
       {actionError !== null ? (
-        <div role="alert" className="error-summary">
+        <div
+          role="alert"
+          className="error-summary"
+          ref={actionAlertRef}
+          tabIndex={-1}
+        >
           {actionError}
         </div>
       ) : null}
@@ -201,7 +264,12 @@ export function ConversationList({ client }: { client: ConversationClient }) {
         <p role="status">Loading conversations…</p>
       ) : null}
       {state.kind === "error" ? (
-        <div role="alert" className="error-summary">
+        <div
+          role="alert"
+          className="error-summary"
+          ref={loadAlertRef}
+          tabIndex={-1}
+        >
           {state.message}
         </div>
       ) : null}
@@ -245,6 +313,7 @@ export function ConversationList({ client }: { client: ConversationClient }) {
                   <div className="item-actions">
                     <button
                       type="button"
+                      aria-label={`Rename “${conversation.title}”`}
                       onClick={() => {
                         setRenamingId(conversation.id);
                         setRenameDraft(conversation.title);
@@ -255,6 +324,8 @@ export function ConversationList({ client }: { client: ConversationClient }) {
                     {conversation.archived_at === null ? (
                       <button
                         type="button"
+                        aria-label={`Archive “${conversation.title}”`}
+                        data-conversation-id={conversation.id}
                         onClick={() => void archive(conversation)}
                       >
                         Archive
@@ -262,6 +333,8 @@ export function ConversationList({ client }: { client: ConversationClient }) {
                     ) : (
                       <button
                         type="button"
+                        aria-label={`Restore “${conversation.title}”`}
+                        data-conversation-id={conversation.id}
                         onClick={() => void undoArchive(conversation)}
                       >
                         Restore

@@ -64,6 +64,53 @@ describe("ConversationClient", () => {
     );
   });
 
+  test("classifies kind and retryability from the problem catalog", async () => {
+    const cases: Array<[number, string, string, boolean]> = [
+      [400, "validation_failed", "validation", false],
+      [401, "unauthenticated", "authentication", false],
+      [404, "not_found", "not_found", false],
+      [409, "conversation_busy", "conflict", false],
+      [413, "payload_too_large", "payload_too_large", false],
+      [429, "rate_limited", "rate_limited", true],
+      [500, "internal_error", "server", true],
+      [503, "service_unavailable", "unavailable", true],
+    ];
+    for (const [status, code, kind, retryable] of cases) {
+      const fetchImpl = vi
+        .fn()
+        .mockResolvedValue(problemResponse(status, code, "x"));
+      const error = await new ConversationClient({ fetchImpl })
+        .listConversations()
+        .catch((caught) => caught);
+      expect(error).toBeInstanceOf(ClientError);
+      expect((error as ClientError).kind).toBe(kind);
+      expect((error as ClientError).retryable).toBe(retryable);
+    }
+  });
+
+  test("treats a transport failure as a retryable network error", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockRejectedValue(new TypeError("Failed to fetch"));
+    const error = await new ConversationClient({ fetchImpl })
+      .listConversations()
+      .catch((caught) => caught);
+    expect(error).toBeInstanceOf(ClientError);
+    expect((error as ClientError).status).toBe(0);
+    expect((error as ClientError).kind).toBe("network");
+    expect((error as ClientError).retryable).toBe(true);
+  });
+
+  test("preserves an abort instead of reclassifying it", async () => {
+    const abort = new Error("aborted");
+    abort.name = "AbortError";
+    const fetchImpl = vi.fn().mockRejectedValue(abort);
+    const error = await new ConversationClient({ fetchImpl })
+      .listConversations()
+      .catch((caught) => caught);
+    expect(error).toBe(abort);
+  });
+
   test("list passes cursor, limit and include_archived", async () => {
     const fetchImpl = vi
       .fn()

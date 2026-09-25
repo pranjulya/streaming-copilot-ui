@@ -82,15 +82,19 @@ describe("ConversationList", () => {
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
     render(<ConversationList client={client} />);
     await userEvent.click(
-      await screen.findByRole("button", { name: "Archive" }),
+      await screen.findByRole("button", { name: /^Archive/ }),
     );
     expect(confirmSpy).toHaveBeenCalled();
     expect(patch).not.toHaveBeenCalled();
 
     confirmSpy.mockReturnValue(true);
-    await userEvent.click(screen.getByRole("button", { name: "Archive" }));
+    await userEvent.click(screen.getByRole("button", { name: /^Archive/ }));
     await waitFor(() =>
-      expect(patch).toHaveBeenCalledWith(conversation().id, { archived: true }),
+      expect(patch).toHaveBeenCalledWith(
+        conversation().id,
+        { archived: true },
+        expect.objectContaining({ idempotencyKey: expect.any(String) }),
+      ),
     );
     expect(await screen.findByText(/Archived/)).toBeTruthy();
     confirmSpy.mockRestore();
@@ -107,12 +111,14 @@ describe("ConversationList", () => {
     });
     render(<ConversationList client={client} />);
     await userEvent.click(
-      await screen.findByRole("button", { name: "Restore" }),
+      await screen.findByRole("button", { name: /^Restore/ }),
     );
     await waitFor(() =>
-      expect(patch).toHaveBeenCalledWith(conversation().id, {
-        archived: false,
-      }),
+      expect(patch).toHaveBeenCalledWith(
+        conversation().id,
+        { archived: false },
+        expect.objectContaining({ idempotencyKey: expect.any(String) }),
+      ),
     );
   });
 
@@ -126,16 +132,18 @@ describe("ConversationList", () => {
     });
     render(<ConversationList client={client} />);
     await userEvent.click(
-      await screen.findByRole("button", { name: "Rename" }),
+      await screen.findByRole("button", { name: /^Rename/ }),
     );
     const input = screen.getByLabelText("Rename conversation");
     await userEvent.clear(input);
     await userEvent.type(input, "  Renamed  ");
     await userEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() =>
-      expect(patch).toHaveBeenCalledWith(conversation().id, {
-        title: "Renamed",
-      }),
+      expect(patch).toHaveBeenCalledWith(
+        conversation().id,
+        { title: "Renamed" },
+        expect.objectContaining({ idempotencyKey: expect.any(String) }),
+      ),
     );
   });
 
@@ -158,7 +166,7 @@ describe("ConversationList", () => {
     vi.spyOn(window, "confirm").mockReturnValue(true);
     render(<ConversationList client={client} />);
     await userEvent.click(
-      await screen.findByRole("button", { name: "Archive" }),
+      await screen.findByRole("button", { name: /^Archive/ }),
     );
     expect((await screen.findByRole("alert")).textContent).toContain(
       "Conversation is busy",
@@ -260,9 +268,11 @@ describe("ConversationList", () => {
     vi.spyOn(window, "confirm").mockReturnValue(true);
     render(<ConversationList client={client} />);
     await userEvent.click(
-      await screen.findByRole("button", { name: "Archive" }),
+      await screen.findByRole("button", { name: /^Archive/ }),
     );
-    expect(await screen.findByRole("button", { name: "Restore" })).toBeTruthy();
+    expect(
+      await screen.findByRole("button", { name: /^Restore/ }),
+    ).toBeTruthy();
     expect(
       screen.getByRole("link", { name: "First conversation" }),
     ).toBeTruthy();
@@ -287,5 +297,100 @@ describe("ConversationList", () => {
     expect(
       await screen.findByRole("link", { name: "New conversation" }),
     ).toBeTruthy();
+  });
+
+  test("names row actions after the conversation title", async () => {
+    const client = stubClient({
+      listConversations: vi
+        .fn()
+        .mockResolvedValue({ items: [conversation()], next_cursor: null }),
+    });
+    render(<ConversationList client={client} />);
+    expect(
+      await screen.findByRole("button", {
+        name: "Archive “First conversation”",
+      }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Rename “First conversation”" }),
+    ).toBeTruthy();
+  });
+
+  test("reuses the idempotency key when an archive retry follows a failure", async () => {
+    const patch = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new ClientError(500, "internal_error", "boom", null),
+      )
+      .mockResolvedValueOnce(
+        conversation({ archived_at: "2026-09-09T11:00:00.000Z" }),
+      );
+    const client = stubClient({
+      listConversations: vi
+        .fn()
+        .mockResolvedValue({ items: [conversation()], next_cursor: null }),
+      patchConversation: patch,
+    });
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<ConversationList client={client} />);
+    await userEvent.click(
+      await screen.findByRole("button", { name: /^Archive/ }),
+    );
+    await screen.findByRole("alert");
+    await userEvent.click(screen.getByRole("button", { name: /^Archive/ }));
+    await screen.findByRole("button", { name: /^Restore/ });
+    expect(patch).toHaveBeenCalledTimes(2);
+    const first = patch.mock.calls[0][2] as { idempotencyKey: string };
+    const second = patch.mock.calls[1][2] as { idempotencyKey: string };
+    expect(second.idempotencyKey).toBe(first.idempotencyKey);
+    vi.mocked(window.confirm).mockRestore();
+  });
+
+  test("moves focus to the error summary when a mutation fails", async () => {
+    const client = stubClient({
+      listConversations: vi
+        .fn()
+        .mockResolvedValue({ items: [conversation()], next_cursor: null }),
+      patchConversation: vi
+        .fn()
+        .mockRejectedValue(
+          new ClientError(
+            409,
+            "conversation_busy",
+            "Conversation is busy",
+            null,
+          ),
+        ),
+    });
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<ConversationList client={client} />);
+    await userEvent.click(
+      await screen.findByRole("button", { name: /^Archive/ }),
+    );
+    const alert = await screen.findByRole("alert");
+    await waitFor(() => expect(document.activeElement).toBe(alert));
+    vi.mocked(window.confirm).mockRestore();
+  });
+
+  test("returns focus to the row action after archiving", async () => {
+    const patch = vi
+      .fn()
+      .mockResolvedValue(
+        conversation({ archived_at: "2026-09-09T11:00:00.000Z" }),
+      );
+    const client = stubClient({
+      listConversations: vi
+        .fn()
+        .mockResolvedValue({ items: [conversation()], next_cursor: null }),
+      patchConversation: patch,
+    });
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<ConversationList client={client} />);
+    await userEvent.click(
+      await screen.findByRole("button", { name: /^Archive/ }),
+    );
+    const restore = await screen.findByRole("button", { name: /^Restore/ });
+    await waitFor(() => expect(document.activeElement).toBe(restore));
+    vi.mocked(window.confirm).mockRestore();
   });
 });

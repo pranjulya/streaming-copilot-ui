@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import type {
@@ -128,7 +128,7 @@ describe("Transcript", () => {
     });
   });
 
-  test("shows a not-found summary for 404", async () => {
+  test("shows a not-found summary for 404 and focuses it", async () => {
     const { ClientError } = await import("../../features/chat/api/client");
     const client = {
       getConversation: vi
@@ -136,7 +136,8 @@ describe("Transcript", () => {
         .mockRejectedValue(new ClientError(404, "not_found", "nope", null)),
     } as unknown as ConversationClient;
     render(<Transcript client={client} conversationId="x" />);
-    expect(await screen.findByRole("alert")).toBeTruthy();
+    const alert = await screen.findByRole("alert");
+    await waitFor(() => expect(document.activeElement).toBe(alert));
   });
 
   test("exposes generation status through a polite status region", async () => {

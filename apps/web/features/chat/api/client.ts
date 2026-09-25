@@ -53,9 +53,44 @@ export type ConversationSnapshot = {
   active_run: RunSnapshot | null;
 };
 
+export type ClientErrorKind =
+  | "validation"
+  | "authentication"
+  | "not_found"
+  | "conflict"
+  | "payload_too_large"
+  | "rate_limited"
+  | "unavailable"
+  | "server"
+  | "network"
+  | "unknown";
+
+const KIND_BY_STATUS: Record<number, ClientErrorKind> = {
+  400: "validation",
+  401: "authentication",
+  404: "not_found",
+  409: "conflict",
+  413: "payload_too_large",
+  429: "rate_limited",
+  503: "unavailable",
+};
+
+// Retryability follows the problem catalog in docs/api-and-stream-contracts.md
+// §9: `rate_limited` and the 5xx codes retry, everything else does not.
+function classify(status: number): {
+  kind: ClientErrorKind;
+  retryable: boolean;
+} {
+  if (status === 0) return { kind: "network", retryable: true };
+  const kind = KIND_BY_STATUS[status] ?? (status >= 500 ? "server" : "unknown");
+  return { kind, retryable: status === 429 || status >= 500 };
+}
+
 export class ClientError extends Error {
   readonly status: number;
   readonly code: string;
+  readonly kind: ClientErrorKind;
+  readonly retryable: boolean;
   readonly diagnosticId: string | null;
 
   constructor(
@@ -65,9 +100,12 @@ export class ClientError extends Error {
     diagnosticId: string | null,
   ) {
     super(message);
+    const { kind, retryable } = classify(status);
     this.name = "ClientError";
     this.status = status;
     this.code = code;
+    this.kind = kind;
+    this.retryable = retryable;
     this.diagnosticId = diagnosticId;
   }
 }
@@ -114,6 +152,16 @@ export class ConversationClient {
       body:
         options.body === undefined ? undefined : JSON.stringify(options.body),
       signal: options.signal,
+    }).catch((caught: unknown) => {
+      // Preserve deliberate aborts; everything else is a retryable transport
+      // failure that the problem catalog does not describe.
+      if (caught instanceof Error && caught.name === "AbortError") throw caught;
+      throw new ClientError(
+        0,
+        "network_error",
+        "The request could not be sent.",
+        null,
+      );
     });
     if (!response.ok) {
       let problem: ProblemBody = {};
@@ -197,6 +245,9 @@ export function newIdempotencyKey(): string {
   return crypto.randomUUID();
 }
 
-export function newClientMessageId(): string {
-  return crypto.randomUUID();
+// Both routes build the same same-origin client from the build-time base URL.
+export function createConversationClient(): ConversationClient {
+  return new ConversationClient({
+    baseUrl: process.env.NEXT_PUBLIC_API_BASE ?? "",
+  });
 }
