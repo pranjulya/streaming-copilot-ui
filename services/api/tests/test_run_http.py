@@ -5,9 +5,16 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from tests.support import database_url, new_user, seed_conversation, seed_messages, session_factory
+from tests.support import (
+    database_url,
+    new_user,
+    seed_conversation,
+    seed_messages,
+    session_factory,
+    writer_factory,
+)
 from tests.test_conversations import api_client
-from tests.test_retry_regenerate import actor_for, writer_factory
+from tests.test_retry_regenerate import actor_for
 
 pytestmark = pytest.mark.skipif(
     not os.getenv("TEST_DATABASE_URL"), reason="Set TEST_DATABASE_URL for real Postgres"

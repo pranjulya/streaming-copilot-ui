@@ -9,12 +9,14 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from tests.support import (
+    build_settings,
     database_url,
     new_user,
     seed_conversation,
     seed_event,
     seed_messages,
     seed_run,
+    writer_factory,
 )
 
 pytestmark = pytest.mark.skipif(
@@ -223,19 +225,13 @@ async def seed_run_and_messages(
     return user, run_id, user_message_id, assistant_message_id
 
 
-def writer_session_factory():
-    from app.persistence.session import create_database_engine, create_session_factory
-
-    return create_session_factory(create_database_engine(database_url()))
-
-
 def test_illegal_transition_completed_to_streaming_raises() -> None:
     from app.chat.event_writer import start_run
     from app.chat.state_machine import InvalidStateTransition
 
     async def scenario() -> None:
         _, run_id, *_ = await seed_run_and_messages(status="completed")
-        factory = writer_session_factory()
+        factory = writer_factory()
         async with factory() as session:
             with pytest.raises(InvalidStateTransition):
                 await start_run(run_id, session=session)
@@ -250,7 +246,7 @@ def test_start_run_is_sequence_one_and_deltas_follow_without_gaps() -> None:
 
     async def scenario() -> None:
         _, run_id, _, assistant_message_id = await seed_run_and_messages()
-        factory = writer_session_factory()
+        factory = writer_factory()
 
         async with factory() as session:
             started = await start_run(run_id, session=session)
@@ -310,7 +306,7 @@ def test_content_index_counts_code_points_for_supplementary_characters() -> None
 
     async def scenario() -> None:
         _, run_id, _, assistant_message_id = await seed_run_and_messages()
-        factory = writer_session_factory()
+        factory = writer_factory()
         async with factory() as session:
             await start_run(run_id, session=session)
         async with factory() as session:
@@ -339,7 +335,7 @@ def test_start_run_is_idempotent_when_already_streaming() -> None:
 
     async def scenario() -> None:
         _, run_id, *_ = await seed_run_and_messages()
-        factory = writer_session_factory()
+        factory = writer_factory()
         async with factory() as session:
             first = await start_run(run_id, session=session)
         async with factory() as session:
@@ -368,7 +364,7 @@ def test_append_delta_rejects_cancel_requested_run() -> None:
 
     async def scenario() -> None:
         user, run_id, *_ = await seed_run_and_messages()
-        factory = writer_session_factory()
+        factory = writer_factory()
         async with factory() as session:
             await start_run(run_id, session=session)
         async with factory() as session:
@@ -388,7 +384,7 @@ def test_cancel_run_from_cancelling_lands_cancelled() -> None:
 
     async def scenario() -> None:
         _, run_id, _, message_id = await seed_run_and_messages(status="cancelling")
-        factory = writer_session_factory()
+        factory = writer_factory()
         async with factory() as session:
             cancelled = await cancel_run(run_id, session=session)
         assert cancelled.type == "response.cancelled"
@@ -425,7 +421,7 @@ def test_concurrent_writers_produce_gapless_sequences() -> None:
 
     async def scenario() -> None:
         _, run_id, *_ = await seed_run_and_messages()
-        factory = writer_session_factory()
+        factory = writer_factory()
         async with factory() as session:
             await start_run(run_id, session=session)
 
@@ -459,11 +455,12 @@ def test_concurrent_writers_produce_gapless_sequences() -> None:
 def test_append_usage_does_not_change_message_content() -> None:
     from sqlalchemy import text as sql_text
 
-    from app.chat.event_writer import Usage, append_delta, append_usage, start_run
+    from app.chat.event_writer import append_delta, append_usage, start_run
+    from app.providers.protocol import Usage
 
     async def scenario() -> None:
         _, run_id, _, assistant_message_id = await seed_run_and_messages()
-        factory = writer_session_factory()
+        factory = writer_factory()
         async with factory() as session:
             await start_run(run_id, session=session)
         async with factory() as session:
@@ -497,11 +494,12 @@ def test_append_usage_does_not_change_message_content() -> None:
 def test_complete_run_is_idempotent_and_content_matches_message() -> None:
     from sqlalchemy import text as sql_text
 
-    from app.chat.event_writer import CompletionResult, Usage, append_delta, complete_run, start_run
+    from app.chat.event_writer import CompletionResult, append_delta, complete_run, start_run
+    from app.providers.protocol import Usage
 
     async def scenario() -> None:
         _, run_id, _, assistant_message_id = await seed_run_and_messages()
-        factory = writer_session_factory()
+        factory = writer_factory()
         async with factory() as session:
             await start_run(run_id, session=session)
         async with factory() as session:
@@ -550,6 +548,35 @@ def test_complete_run_is_idempotent_and_content_matches_message() -> None:
     asyncio.run(scenario())
 
 
+def test_complete_run_emits_zero_usage_when_provider_omits_it() -> None:
+    from sqlalchemy import text as sql_text
+
+    from app.chat.event_writer import CompletionResult, complete_run, start_run
+
+    async def scenario() -> None:
+        _, run_id, *_ = await seed_run_and_messages()
+        factory = writer_factory()
+        async with factory() as session:
+            await start_run(run_id, session=session)
+        async with factory() as session:
+            _, response_event = await complete_run(
+                run_id, CompletionResult(content="done", finish_reason="stop"), session=session
+            )
+        assert response_event.data["usage"] == {"input_tokens": 0, "output_tokens": 0}
+        async with factory() as session:
+            tokens = (
+                await session.execute(
+                    sql_text(
+                        "SELECT input_tokens, output_tokens FROM response_runs WHERE id = :id"
+                    ),
+                    {"id": run_id},
+                )
+            ).one()
+        assert tuple(tokens) == (0, 0)
+
+    asyncio.run(scenario())
+
+
 def test_cancel_from_queued_and_streaming_lands_cancelled_with_partial() -> None:
     from sqlalchemy import text as sql_text
 
@@ -557,7 +584,7 @@ def test_cancel_from_queued_and_streaming_lands_cancelled_with_partial() -> None
 
     async def scenario() -> None:
         _, queued_run, _, queued_message = await seed_run_and_messages()
-        factory = writer_session_factory()
+        factory = writer_factory()
         async with factory() as session:
             cancelled = await cancel_run(queued_run, session=session)
         assert cancelled.type == "response.cancelled"
@@ -624,7 +651,7 @@ def test_fail_run_is_terminal_and_idempotent() -> None:
 
     async def scenario() -> None:
         _, run_id, _, assistant_message = await seed_run_and_messages()
-        factory = writer_session_factory()
+        factory = writer_factory()
         async with factory() as session:
             await start_run(run_id, session=session)
         async with factory() as session:
@@ -698,12 +725,6 @@ async def reap_statuses(factory, run_ids: list[uuid.UUID]) -> dict[uuid.UUID, st
     return {row[0]: row[1] for row in rows}
 
 
-def reap_settings():
-    from app.settings import Settings
-
-    return Settings(_env_file=None, database_url=database_url())
-
-
 def test_reaper_rechecks_the_lease_under_the_lock() -> None:
     from datetime import timedelta
 
@@ -714,7 +735,7 @@ def test_reaper_rechecks_the_lease_under_the_lock() -> None:
 
     async def scenario() -> None:
         _, run_id, *_ = await seed_run_and_messages()
-        factory = writer_session_factory()
+        factory = writer_factory()
         async with factory() as session:
             async with session.begin():
                 await session.execute(
@@ -751,7 +772,7 @@ def test_completing_a_terminal_run_in_another_state_is_invalid_run_state() -> No
 
     async def scenario() -> None:
         _, run_id, *_ = await seed_run_and_messages(status="failed")
-        factory = writer_session_factory()
+        factory = writer_factory()
         result = CompletionResult(content="late", finish_reason="stop")
         with pytest.raises(AppError) as caught:
             async with factory() as session:
@@ -770,8 +791,8 @@ def test_startup_reaper_fails_null_expired_and_own_instance_runs() -> None:
     from app.chat.responses import reap_orphaned_runs
 
     async def scenario() -> None:
-        factory = writer_session_factory()
-        settings = reap_settings()
+        factory = writer_factory()
+        settings = build_settings()
         now = datetime.now(UTC)
         expired_other = await seed_reap_target(
             factory, new_user("reap1"), owner=uuid.uuid4(), lease=now - timedelta(minutes=1)
@@ -829,8 +850,8 @@ def test_periodic_reaper_only_touches_null_or_expired_leases() -> None:
     from app.chat.responses import reap_expired_leases
 
     async def scenario() -> None:
-        factory = writer_session_factory()
-        settings = reap_settings()
+        factory = writer_factory()
+        settings = build_settings()
         now = datetime.now(UTC)
         this_live = await seed_reap_target(
             factory, new_user("per1"), owner=settings.instance_id, lease=now + timedelta(minutes=10)
@@ -871,8 +892,8 @@ def test_new_instance_id_waits_for_expiry_then_any_replica_fails_the_run() -> No
     from app.chat.responses import reap_expired_leases
 
     async def scenario() -> None:
-        factory = writer_session_factory()
-        old_settings = reap_settings()
+        factory = writer_factory()
+        old_settings = build_settings()
         run_id = await seed_reap_target(
             factory,
             new_user("restart-new"),
@@ -894,7 +915,7 @@ def test_new_instance_id_waits_for_expiry_then_any_replica_fails_the_run() -> No
                     ),
                     {"id": run_id},
                 )
-        any_replica = reap_settings()
+        any_replica = build_settings()
         async with factory() as session:
             await reap_expired_leases(session=session, settings=any_replica)
 
@@ -909,8 +930,8 @@ def test_same_instance_id_startup_reaper_fails_but_periodic_does_not() -> None:
     from app.chat.responses import reap_expired_leases, reap_orphaned_runs
 
     async def scenario() -> None:
-        factory = writer_session_factory()
-        settings = reap_settings()
+        factory = writer_factory()
+        settings = build_settings()
         run_id = await seed_reap_target(
             factory,
             new_user("restart-same"),

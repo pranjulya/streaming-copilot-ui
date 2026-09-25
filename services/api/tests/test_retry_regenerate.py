@@ -5,17 +5,18 @@ import uuid
 import pytest
 from sqlalchemy import text
 
-from tests.support import database_url, new_user, seed_conversation, seed_run, session_factory
+from tests.support import (
+    build_settings,
+    database_url,
+    new_user,
+    seed_conversation,
+    seed_run,
+    session_factory,
+)
 
 pytestmark = pytest.mark.skipif(
     not os.getenv("TEST_DATABASE_URL"), reason="Set TEST_DATABASE_URL for real Postgres"
 )
-
-
-def app_settings(**overrides: object):
-    from app.settings import Settings
-
-    return Settings(_env_file=None, database_url=database_url(), **overrides)  # type: ignore[arg-type]
 
 
 async def seed_turn(
@@ -66,12 +67,6 @@ async def seed_plain_conversation(
     return user, conversation_id
 
 
-def writer_factory():
-    from app.persistence.session import create_database_engine, create_session_factory
-
-    return create_session_factory(create_database_engine(database_url()))
-
-
 def create_cmd(
     conversation_id: uuid.UUID,
     *,
@@ -91,13 +86,13 @@ def create_cmd(
     )
 
 
-async def create_turn(user: str, cmd, *, settings=None) -> object:
+async def create_turn(user: str, cmd) -> object:
     from app.chat.responses import create_response
 
     factory = session_factory()
     async with factory() as session:
         return await create_response(
-            cmd, actor_for(user), session=session, settings=settings or app_settings()
+            cmd, actor_for(user), session=session, settings=build_settings()
         )
 
 
@@ -276,7 +271,7 @@ def test_retry_from_failed_creates_new_version_with_lease() -> None:
 
     async def scenario() -> None:
         user, _, user_message_id, _, source_run_id = await seed_turn(run_status="failed")
-        settings = app_settings()
+        settings = build_settings()
         factory = session_factory()
         async with factory() as session:
             new_run = await retry_run(
@@ -322,7 +317,7 @@ def test_retry_respects_per_user_cap() -> None:
         with pytest.raises(AppError) as caught:
             async with session_factory()() as session:
                 await retry_run(
-                    source_run, actor_for(user), session=session, settings=app_settings()
+                    source_run, actor_for(user), session=session, settings=build_settings()
                 )
         assert caught.value.code == "too_many_active_runs"
 
@@ -340,7 +335,7 @@ def test_retry_and_regenerate_reject_archived_conversation() -> None:
         with pytest.raises(AppError) as caught:
             async with session_factory()() as session:
                 await retry_run(
-                    source_run_id, actor_for(user), session=session, settings=app_settings()
+                    source_run_id, actor_for(user), session=session, settings=build_settings()
                 )
         assert caught.value.code == "conversation_archived"
 
@@ -351,7 +346,7 @@ def test_retry_and_regenerate_reject_archived_conversation() -> None:
         with pytest.raises(AppError) as caught:
             async with session_factory()() as session:
                 await regenerate_message(
-                    user_message2, actor_for(user2), session=session, settings=app_settings()
+                    user_message2, actor_for(user2), session=session, settings=build_settings()
                 )
         assert caught.value.code == "conversation_archived"
         del user_message_id
@@ -369,7 +364,7 @@ def test_retry_from_completed_or_streaming_rejected() -> None:
             with pytest.raises(AppError) as caught:
                 async with session_factory()() as session:
                     await retry_run(
-                        run_id, actor_for(user), session=session, settings=app_settings()
+                        run_id, actor_for(user), session=session, settings=build_settings()
                     )
             assert caught.value.code == "invalid_run_state"
 
@@ -385,7 +380,7 @@ def test_regenerate_while_active_is_busy() -> None:
         with pytest.raises(AppError) as caught:
             async with session_factory()() as session:
                 await regenerate_message(
-                    user_message_id, actor_for(user), session=session, settings=app_settings()
+                    user_message_id, actor_for(user), session=session, settings=build_settings()
                 )
         assert caught.value.code == "conversation_busy"
         assert caught.value.extensions["active_run_id"] == str(active_run_id)
@@ -401,7 +396,7 @@ def test_regenerate_from_completed_hides_previous_answer() -> None:
         factory = session_factory()
         async with factory() as session:
             new_run = await regenerate_message(
-                user_message_id, actor_for(user), session=session, settings=app_settings()
+                user_message_id, actor_for(user), session=session, settings=build_settings()
             )
         row = await run_row(new_run.id)
         assert row["status"] == "queued"
@@ -429,7 +424,7 @@ def test_regenerate_replays_same_key_while_new_run_is_queued() -> None:
                 user_message_id,
                 actor_for(user),
                 session=session,
-                settings=app_settings(),
+                settings=build_settings(),
                 idempotency_key=key,
                 request_hash="regen-same",
             )
@@ -438,7 +433,7 @@ def test_regenerate_replays_same_key_while_new_run_is_queued() -> None:
                 user_message_id,
                 actor_for(user),
                 session=session,
-                settings=app_settings(),
+                settings=build_settings(),
                 idempotency_key=key,
                 request_hash="regen-same",
             )
@@ -540,7 +535,7 @@ def test_failed_creation_rolls_back_and_keeps_previous_answer_visible(
         with pytest.raises(RuntimeError, match="insert failed"):
             async with session_factory()() as session:
                 await retry_run(
-                    source_run_id, actor_for(user), session=session, settings=app_settings()
+                    source_run_id, actor_for(user), session=session, settings=build_settings()
                 )
 
         after = await visible_assistants(user_message_id)

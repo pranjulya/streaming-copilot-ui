@@ -8,7 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.auth import Actor
 from app.api.errors import AppError
-from app.chat.event_writer import SafeFailure, fail_locked_run
+from app.chat.event_writer import fail_locked_run
+from app.chat.failures import safe_failure
 from app.chat.state_machine import InvalidStateTransition, is_terminal
 from app.persistence.models import (
     Conversation,
@@ -494,14 +495,6 @@ async def regenerate_message(
     )
 
 
-def _restart_failure() -> SafeFailure:
-    return SafeFailure(
-        code="server_restart",
-        message="The assistant stopped responding. Retrying is safe.",
-        retryable=True,
-    )
-
-
 def _orphan_condition(settings: Settings, *, include_own_instance: bool) -> ColumnElement[bool]:
     now = datetime.now(UTC)
     conditions = [
@@ -537,7 +530,7 @@ async def _fail_targets(
                     continue
                 if not _is_orphan_run(run, settings, include_own_instance=include_own_instance):
                     continue
-                await fail_locked_run(session, run, _restart_failure())
+                await fail_locked_run(session, run, safe_failure("server_restart"))
             reaped += 1
         except InvalidStateTransition:
             continue

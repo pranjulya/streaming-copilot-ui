@@ -67,10 +67,7 @@ class Settings(BaseSettings):
             self.dev_user_id = self.dev_user_id or "dev-user"
         else:
             required = {
-                "DATABASE_URL": (
-                    "database_url" in self.model_fields_set
-                    and self.database_url.get_secret_value() != LOCAL_DATABASE_URL
-                ),
+                "DATABASE_URL": "database_url" in self.model_fields_set,
                 "XAI_API_KEY": self.xai_api_key and self.xai_api_key.get_secret_value().strip(),
                 "AUTH_JWT_ISSUER": self.auth_jwt_issuer and self.auth_jwt_issuer.strip(),
                 "AUTH_JWT_AUDIENCE": self.auth_jwt_audience and self.auth_jwt_audience.strip(),

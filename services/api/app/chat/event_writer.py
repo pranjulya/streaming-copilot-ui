@@ -15,6 +15,7 @@ from app.persistence.models import (
     StreamEventRecord,
     uuid7,
 )
+from app.providers.protocol import Usage
 
 PROTOCOL_VERSION = "1.0"
 
@@ -41,12 +42,6 @@ class StreamEvent:
             "run_id": str(self.run_id),
             "data": self.data,
         }
-
-
-@dataclass(frozen=True)
-class Usage:
-    input_tokens: int
-    output_tokens: int
 
 
 @dataclass(frozen=True)
@@ -237,9 +232,9 @@ async def complete_run(
         run.status = "completed"
         run.completed_at = now
         run.updated_at = now
-        if result.usage is not None:
-            run.input_tokens = result.usage.input_tokens
-            run.output_tokens = result.usage.output_tokens
+        usage = result.usage or Usage(0, 0)
+        run.input_tokens = usage.input_tokens
+        run.output_tokens = usage.output_tokens
         conversation = await _load_conversation(session, run.conversation_id)
         conversation.updated_at = now
         message_data: dict[str, object] = {
@@ -248,12 +243,13 @@ async def complete_run(
             "finish_reason": result.finish_reason,
         }
         message_event = await _insert_event(session, run, "message.completed", message_data)
-        response_data: dict[str, object] = {"finish_reason": result.finish_reason}
-        if result.usage is not None:
-            response_data["usage"] = {
-                "input_tokens": result.usage.input_tokens,
-                "output_tokens": result.usage.output_tokens,
-            }
+        response_data: dict[str, object] = {
+            "finish_reason": result.finish_reason,
+            "usage": {
+                "input_tokens": usage.input_tokens,
+                "output_tokens": usage.output_tokens,
+            },
+        }
         response_event = await _insert_event(session, run, "response.completed", response_data)
         return message_event, response_event
 

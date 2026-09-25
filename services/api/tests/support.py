@@ -18,6 +18,18 @@ def session_factory() -> async_sessionmaker[AsyncSession]:
     return async_sessionmaker(engine, expire_on_commit=False)
 
 
+def writer_factory():
+    from app.persistence.session import create_database_engine, create_session_factory
+
+    return create_session_factory(create_database_engine(database_url()))
+
+
+def build_settings(**overrides: object):
+    from app.settings import Settings
+
+    return Settings(_env_file=None, database_url=database_url(), **overrides)  # type: ignore[arg-type]
+
+
 def new_user(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:10]}"
 

@@ -45,6 +45,21 @@ def production_settings(**overrides):
     )
 
 
+def test_production_accepts_explicit_local_database_url():
+    from app.settings import LOCAL_DATABASE_URL
+
+    settings = Settings(
+        _env_file=None,
+        app_env="production",
+        database_url=LOCAL_DATABASE_URL,
+        xai_api_key="test-only-key",
+        auth_jwt_issuer="https://auth.example.test",
+        auth_jwt_audience="copilot",
+        auth_jwt_jwks_url="https://auth.example.test/jwks.json",
+    )
+    assert settings.database_url.get_secret_value() == LOCAL_DATABASE_URL
+
+
 def test_production_has_no_development_identity():
     assert production_settings().dev_user_id is None
 
