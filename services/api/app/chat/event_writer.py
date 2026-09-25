@@ -1,8 +1,8 @@
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api import rfc3339
@@ -394,3 +394,22 @@ async def follow_events(
         )
         return [snapshot, *events]
     return events
+
+
+async def compact_expired_events(*, session: AsyncSession, retention_hours: int) -> int:
+    """Delete stream_events for terminal runs older than the replay window.
+
+    Canonical message/run rows stay. Followers synthesize `response.snapshot`.
+    Active (non-terminal) runs are never compacted.
+    """
+    cutoff = datetime.now(UTC) - timedelta(hours=retention_hours)
+    expired_ids = select(ResponseRun.id).where(
+        ResponseRun.status.in_(("completed", "cancelled", "failed")),
+        ResponseRun.completed_at.is_not(None),
+        ResponseRun.completed_at < cutoff,
+    )
+    async with session.begin():
+        result = await session.execute(
+            delete(StreamEventRecord).where(StreamEventRecord.run_id.in_(expired_ids))
+        )
+    return int(getattr(result, "rowcount", 0) or 0)

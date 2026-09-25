@@ -40,6 +40,14 @@ def test_metrics_expose_request_run_event_and_token_counters() -> None:
         user = new_user("metrics")
         provider = FakeProvider(deltas=["hello"], finish_reason="stop", usage=Usage(9, 4))
         with observable_client(user, provider) as client:
+
+            def counter_value(blob: str, fragment: str) -> float:
+                for line in blob.splitlines():
+                    if line.startswith(fragment):
+                        return float(line.rsplit(" ", 1)[1])
+                return 0.0
+
+            before = metrics_text(client)
             created = client.post(
                 "/v1/conversations",
                 json={},
@@ -61,8 +69,11 @@ def test_metrics_expose_request_run_event_and_token_counters() -> None:
         assert (
             'copilot_runs_terminal_total{error_code="",model="grok-4.6",status="completed"}' in text
         )
-        assert 'copilot_tokens_total{direction="input",model="grok-4.6"} 9.0' in text
-        assert 'copilot_tokens_total{direction="output",model="grok-4.6"} 4.0' in text
+
+        input_frag = 'copilot_tokens_total{direction="input",model="grok-4.6"}'
+        output_frag = 'copilot_tokens_total{direction="output",model="grok-4.6"}'
+        assert counter_value(text, input_frag) - counter_value(before, input_frag) == 9.0
+        assert counter_value(text, output_frag) - counter_value(before, output_frag) == 4.0
 
     asyncio.run(scenario())
 

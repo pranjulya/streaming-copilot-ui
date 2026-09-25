@@ -1,0 +1,7 @@
+{
+  "set_version": "2026-09-24.1",
+  "mode": "live",
+  "recorded_at": null,
+  "note": "No live grok-4.6 baseline recorded yet. Record with EVAL_MODE=live; store ids, pass/fail, tokens, and latency only.",
+  "results": []
+}

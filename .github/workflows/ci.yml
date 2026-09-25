@@ -21,6 +21,7 @@ jobs:
       DATABASE_URL: postgresql+asyncpg://copilot:copilot@127.0.0.1:5432/copilot
       TEST_DATABASE_URL: postgresql+asyncpg://copilot:copilot@127.0.0.1:5432/copilot
       NEXT_TELEMETRY_DISABLED: '1'
+      REHEARSE_RESTORE: '1'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -43,6 +44,8 @@ jobs:
         run: |
           docker compose up -d --wait
           docker compose exec -T postgres pg_isready -U copilot
+      - name: Install PostgreSQL client for restore rehearsal
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
       - name: Install locked dependencies
         run: |
           uv sync --project services/api --locked

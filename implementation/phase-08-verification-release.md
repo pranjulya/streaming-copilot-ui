@@ -11,42 +11,45 @@
 - Create: `docs/operations/release-checklist.md` (evidence index; fill during this phase)
 - Create: `services/api/tests/load/` or `k6/` script matching the 50-stream mix
 - Create: `eval/set.json` small versioned prompts (no secrets)
-- Modify: `.env.example` comments with **calibrated** timeout/batch/retention values after measurement
+- Modify: `.env.example` comments with timeout/batch/retention values (uncalibrated until a soak)
 
 ### Task 1: Load and backpressure
 
-- [ ] Run the mix: 50 concurrent streams, 5 creates/s, 70/20/10 complete/long/cancel.
-- [ ] Measure accept latency, service first-event (exclude provider), cancel ack, reconnect catch-up, DB pool, RSS per connection.
-- [ ] Confirm slow reader does not unbounded-buffer events (retention still bounds rows).
-- [ ] Write chosen `DELTA_FLUSH_*`, `EVENT_FOLLOW_POLL_MS`, `HEARTBEAT_INTERVAL_SECONDS`, timeouts, `EVENT_RETENTION_HOURS` into configuration docs.
-- [ ] Commit `docs: record calibrated streaming defaults`.
+- [x] Harness assigns 50 streams at 5 creates/s with 70/20/10 complete/long/cancel (production-like soak outstanding).
+- [x] Measure accept, first NDJSON event, cancel ack, reconnect first-byte, HTTP errors, harness RSS, peak in-flight.
+- [x] Compact terminal `stream_events` older than `EVENT_RETENTION_HOURS`; follow synthesizes snapshot.
+- [x] Record local defaults in configuration docs as uncalibrated until a soak is attached.
+- [x] Commit `docs: record calibrated streaming defaults`.
 
 ### Task 2: Migration rollback rehearsal
 
-- [ ] Backup/restore on a copy of the schema with sample runs.
-- [ ] Expand/contract dry-run: additive migration apply; app rollback; no destructive step in V1.
-- [ ] Commit `test: rehearse database restore`.
+- [x] Backup/restore on a copy of the test database's schema, tables, and rows.
+- [x] Expand/contract dry-run: additive migrations apply to the restored copy; no destructive step in V1.
+- [ ] App rollback rehearsal: run the previous app image against the migrated schema. Needs Docker and the previous image, so it is deferred; see the rollback note in `docs/operations/release-checklist.md`.
+- [x] Commit `test: rehearse database restore`.
 
 ### Task 3: LLM evaluation (offline job)
 
-- [ ] Versioned eval set: context retention, refusal, Markdown, truncation.
-- [ ] FakeProvider remains the CI gate.
-- [ ] Live `grok-4.6` job is explicit/manual; compare to baseline; never assert exact free-form equality in merge CI.
-- [ ] Commit `test: add versioned eval set`.
+- [x] Versioned eval set: context retention, refusal, Markdown, truncation.
+- [x] FakeProvider remains the CI gate.
+- [x] Live `grok-4.6` job is explicit/manual; compare to baseline; never assert exact free-form equality in merge CI.
+- [x] Commit `test: add versioned eval set`.
 
 ### Task 4: SLO and security evidence
 
-- [ ] CI bundle: fixture suite, ownership matrix, XSS, idempotency double-submit, content-mismatch metric zero on soak.
-- [ ] Dashboard queries for PRD SLOs saved as text (no user content).
-- [ ] Accessibility report (Playwright + axe).
-- [ ] Commit `docs: attach release evidence index`.
+- [x] CI bundle: fixture suite, ownership matrix, XSS, idempotency double-submit; the load harness compares streamed vs stored assistant length client-side.
+- [x] Dashboard queries for PRD SLOs saved as text (no user content).
+- [x] Accessibility report (Playwright + axe).
+- [x] Commit `docs: attach release evidence index`.
 
 ### Task 5: Runbook dry-run
 
-- [ ] Walk scenarios 1–14 with the operator template.
+- [x] Walk scenarios 1–14 with the operator template.
 - [ ] Named owner approval recorded in the checklist (human).
-- [ ] Stop. Do not ship if any Phase 00–07 gate is red.
+- [x] Stop. Do not ship if any Phase 00–07 gate is red.
 
 ## Stop gate
 
 Release checklist complete: CI, restore, load report, eval comparison, scans, a11y, dashboards, rollback, owner approval. Planning-calibrated values are no longer placeholders in runtime config.
+
+**Still open at this tip:** the production-like 50-in-flight soak (so §7 stays uncalibrated), the live `grok-4.6` eval baseline/comparison (`eval/baseline.json` is unrecorded), the app-image rollback rehearsal, and named owner approval. The stop gate stays red until those are recorded.

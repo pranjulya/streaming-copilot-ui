@@ -23,6 +23,13 @@ body {
   text-decoration: none;
 }
 
+.list-title,
+.conversation-title {
+  margin: 0 0 0.5rem;
+  font-size: 1.5rem;
+  font-weight: 600;
+}
+
 .app-main {
   flex: 1;
   padding: 1rem;

@@ -18,6 +18,26 @@ def test_fake_provider_default_finish_includes_zero_usage() -> None:
     asyncio.run(scenario())
 
 
+def test_fake_provider_uses_long_delay_when_user_marks_the_prompt() -> None:
+    import time
+
+    from app.providers.fake import FakeProvider
+    from app.providers.protocol import CancelSignal, ProviderMessage
+
+    provider = FakeProvider(deltas=["x"], delay_seconds=0.0, long_delay_seconds=0.05)
+
+    async def timed(content: str) -> float:
+        started = time.perf_counter()
+        async for _ in provider.stream(
+            [ProviderMessage(role="user", content=content)], signal=CancelSignal()
+        ):
+            pass
+        return time.perf_counter() - started
+
+    assert asyncio.run(timed("load rehearsal")) < 0.04
+    assert asyncio.run(timed("load rehearsal [long]")) >= 0.04
+
+
 def test_fake_provider_streams_scripted_text_and_finish() -> None:
     from app.providers.fake import FakeProvider
     from app.providers.protocol import CancelSignal, ProviderMessage, Usage

@@ -85,3 +85,90 @@ def test_follow_events_synthesizes_snapshot_when_events_were_compacted() -> None
         assert up_to_date == []
 
     asyncio.run(scenario())
+
+
+def test_compact_expired_events_deletes_old_terminal_rows_and_keeps_recent() -> None:
+    from sqlalchemy import text
+
+    from app.chat.event_writer import (
+        CompletionResult,
+        append_delta,
+        compact_expired_events,
+        complete_run,
+        follow_events,
+        start_run,
+    )
+    from app.settings import Settings
+    from tests.support import database_url
+
+    async def scenario() -> None:
+        _, _, _, _, old_run_id = await seed_turn(prefix="retain-old")
+        _, _, _, _, new_run_id = await seed_turn(prefix="retain-new")
+        _, _, _, _, active_run_id = await seed_turn(prefix="retain-live")
+        factory = writer_factory()
+
+        async def finish(run_id) -> None:
+            async with factory() as session:
+                await start_run(run_id, session=session)
+            async with factory() as session:
+                await append_delta(run_id, "kept ", session=session)
+            async with factory() as session:
+                await complete_run(
+                    run_id,
+                    CompletionResult(content="kept final", finish_reason="stop"),
+                    session=session,
+                )
+
+        await finish(old_run_id)
+        await finish(new_run_id)
+        async with factory() as session:
+            await start_run(active_run_id, session=session)
+        async with factory() as session:
+            await append_delta(active_run_id, "live ", session=session)
+
+        async with factory() as session:
+            async with session.begin():
+                await session.execute(
+                    text(
+                        "UPDATE response_runs SET completed_at = now() - interval '25 hours'"
+                        " WHERE id = :id"
+                    ),
+                    {"id": old_run_id},
+                )
+
+        settings = Settings(_env_file=None, database_url=database_url(), event_retention_hours=24)
+        async with factory() as session:
+            deleted = await compact_expired_events(
+                session=session, retention_hours=settings.event_retention_hours
+            )
+        assert deleted > 0
+
+        async with factory() as session:
+            old_count = (
+                await session.execute(
+                    text("SELECT count(*) FROM stream_events WHERE run_id = :id"),
+                    {"id": old_run_id},
+                )
+            ).scalar_one()
+            new_count = (
+                await session.execute(
+                    text("SELECT count(*) FROM stream_events WHERE run_id = :id"),
+                    {"id": new_run_id},
+                )
+            ).scalar_one()
+            live_count = (
+                await session.execute(
+                    text("SELECT count(*) FROM stream_events WHERE run_id = :id"),
+                    {"id": active_run_id},
+                )
+            ).scalar_one()
+        assert old_count == 0
+        assert new_count > 0
+        assert live_count > 0
+
+        async with factory() as session:
+            replay = await follow_events(old_run_id, 0, session=session)
+        assert replay[0].type == "response.snapshot"
+        assert replay[0].data["content"] == "kept final"
+
+    asyncio.run(scenario())

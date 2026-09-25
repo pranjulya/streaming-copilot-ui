@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     )
     dev_user_id: str | None = None
     fake_provider_plan: str = ""
+    fake_provider_long_delay_seconds: float = 0.0
     auth_jwt_issuer: str | None = None
     auth_jwt_audience: str | None = None
     auth_jwt_jwks_url: str | None = None

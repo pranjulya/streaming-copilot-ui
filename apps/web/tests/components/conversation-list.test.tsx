@@ -39,6 +39,13 @@ function stubClient(
 }
 
 describe("ConversationList", () => {
+  test("renders a page level heading", async () => {
+    render(<ConversationList client={stubClient()} />);
+    expect(
+      await screen.findByRole("heading", { level: 1, name: "Conversations" }),
+    ).toBeTruthy();
+  });
+
   test("renders conversations as links", async () => {
     const client = stubClient({
       listConversations: vi

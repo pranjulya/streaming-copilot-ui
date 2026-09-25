@@ -26,6 +26,7 @@ class FakeProvider:
         ignores_cancel: bool = False,
         delay_seconds: float = 0.0,
         hang_after: int | None = None,
+        long_delay_seconds: float = 0.0,
     ) -> None:
         self.deltas = list(deltas)
         self.finish_reason = finish_reason
@@ -36,6 +37,7 @@ class FakeProvider:
         )
         self.ignores_cancel = ignores_cancel
         self.delay_seconds = delay_seconds
+        self.long_delay_seconds = long_delay_seconds
         self.hang_after = hang_after
 
     async def stream(
@@ -44,14 +46,17 @@ class FakeProvider:
         *,
         signal: CancelSignal,
     ) -> AsyncIterator[ProviderDelta]:
-        del messages
+        delay = self.delay_seconds
+        last = messages[-1].content if messages else ""
+        if self.long_delay_seconds and "[long]" in last:
+            delay = self.long_delay_seconds
         for index, text in enumerate(self.deltas):
             if self.hang_after is not None and index == self.hang_after:
                 await asyncio.Event().wait()
             if signal.cancelled and not self.ignores_cancel:
                 return
-            if self.delay_seconds:
-                await asyncio.sleep(self.delay_seconds)
+            if delay:
+                await asyncio.sleep(delay)
             if self.fail_after is not None and index == self.fail_after:
                 raise ProviderStreamError(self.failure)
             yield ProviderDelta(text=text)
@@ -84,7 +89,9 @@ class PlannedFakeProvider:
         return step.stream(messages, signal=signal)
 
 
-def planned_provider_from_steps(steps: list[dict[str, Any]]) -> PlannedFakeProvider:
+def planned_provider_from_steps(
+    steps: list[dict[str, Any]], *, long_delay_seconds: float = 0.0
+) -> PlannedFakeProvider:
     """Build the scripted provider shared by the environment plan and the dev hook."""
 
     return PlannedFakeProvider(
@@ -95,6 +102,7 @@ def planned_provider_from_steps(steps: list[dict[str, Any]]) -> PlannedFakeProvi
                 fail_after=step.get("fail_after"),
                 delay_seconds=float(step.get("delay_seconds", 0.0)),
                 ignores_cancel=bool(step.get("ignores_cancel", False)),
+                long_delay_seconds=float(step.get("long_delay_seconds", long_delay_seconds)),
             )
             for step in steps
         ]
