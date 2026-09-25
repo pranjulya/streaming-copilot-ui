@@ -12,7 +12,8 @@
 set -euo pipefail
 
 SOURCE_URI="${1:?usage: rehearse_restore.sh <postgres-uri> [scratch-name]}"
-SCRATCH="${2:-copilot_restore_rehearsal}"
+# Random suffix so concurrent invocations do not collide on the scratch database.
+SCRATCH="${2:-copilot_restore_rehearsal_${RANDOM}}"
 if [[ ! "$SCRATCH" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
   echo "invalid scratch database name: $SCRATCH" >&2
   exit 1

@@ -23,8 +23,9 @@
 
 ### Task 2: Migration rollback rehearsal
 
-- [x] Backup/restore on a copy of the schema with sample runs.
-- [x] Expand/contract dry-run: additive migration apply; app rollback; no destructive step in V1.
+- [x] Backup/restore on a copy of the test database's schema, tables, and rows.
+- [x] Expand/contract dry-run: additive migrations apply to the restored copy; no destructive step in V1.
+- [ ] App rollback rehearsal: run the previous app image against the migrated schema. Needs Docker and the previous image, so it is deferred; see the rollback note in `docs/operations/release-checklist.md`.
 - [x] Commit `test: rehearse database restore`.
 
 ### Task 3: LLM evaluation (offline job)
@@ -36,7 +37,7 @@
 
 ### Task 4: SLO and security evidence
 
-- [x] CI bundle: fixture suite, ownership matrix, XSS, idempotency double-submit, content-mismatch metric zero on soak.
+- [x] CI bundle: fixture suite, ownership matrix, XSS, idempotency double-submit; the load harness compares streamed vs stored assistant length client-side.
 - [x] Dashboard queries for PRD SLOs saved as text (no user content).
 - [x] Accessibility report (Playwright + axe).
 - [x] Commit `docs: attach release evidence index`.
@@ -50,3 +51,5 @@
 ## Stop gate
 
 Release checklist complete: CI, restore, load report, eval comparison, scans, a11y, dashboards, rollback, owner approval. Planning-calibrated values are no longer placeholders in runtime config.
+
+**Still open at this tip:** the production-like 50-in-flight soak (so §7 stays uncalibrated), the live `grok-4.6` eval baseline/comparison (`eval/baseline.json` is unrecorded), the app-image rollback rehearsal, and named owner approval. The stop gate stays red until those are recorded.

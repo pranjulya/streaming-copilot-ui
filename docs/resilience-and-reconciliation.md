@@ -75,7 +75,7 @@ If replay retention no longer contains the cursor, the server emits a canonical 
 
 ## 8. Timeouts
 
-Distinct configurable deadlines exist for request validation/transaction, provider connect, provider idle, total generation, stream heartbeat, and graceful shutdown. A timeout produces a stable failure code and preserves committed partial content. Concrete values are calibrated under Phase 08 tests rather than guessed in architecture.
+Distinct configurable deadlines exist for request validation/transaction, provider connect, provider idle, total generation, stream heartbeat, and graceful shutdown. A timeout produces a stable failure code and preserves committed partial content. Concrete values are to be calibrated by the Phase 08 load tests rather than guessed in architecture; they stay uncalibrated until a production-like soak is recorded (`docs/configuration.md` §7).
 
 ## 9. Duplicate and ordering defense
 

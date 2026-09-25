@@ -102,9 +102,7 @@ def planned_provider_from_steps(
                 fail_after=step.get("fail_after"),
                 delay_seconds=float(step.get("delay_seconds", 0.0)),
                 ignores_cancel=bool(step.get("ignores_cancel", False)),
-                long_delay_seconds=float(
-                    step.get("long_delay_seconds", long_delay_seconds)
-                ),
+                long_delay_seconds=float(step.get("long_delay_seconds", long_delay_seconds)),
             )
             for step in steps
         ]

@@ -11,6 +11,9 @@ test("conversation list and transcript pass axe in a real browser", async ({
   ]);
   await page.goto("/");
   await expect(page.getByRole("link", { name: "Copilot" })).toBeVisible();
+  // Wait for the list to leave its loading shell so axe sees the populated list
+  // (conversation links, rename/archive controls), not just "Loading conversations…".
+  await expect(page.getByText("Loading conversations…")).toHaveCount(0);
 
   const listResults = await new AxeBuilder({ page }).analyze();
   expect(listResults.violations).toEqual([]);

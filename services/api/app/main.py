@@ -35,9 +35,7 @@ def _build_provider(config: Settings) -> LlmProvider:
         long_delay = config.fake_provider_long_delay_seconds
         plan = config.fake_provider_plan.strip()
         if plan:
-            return planned_provider_from_steps(
-                json.loads(plan), long_delay_seconds=long_delay
-            )
+            return planned_provider_from_steps(json.loads(plan), long_delay_seconds=long_delay)
         return FakeProvider(
             deltas=[
                 "This is the local fake provider. ",

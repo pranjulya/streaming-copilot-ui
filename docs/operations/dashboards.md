@@ -10,8 +10,10 @@ contain no user content and no prompt/response text.
 sum(rate(copilot_http_requests_total{status=~"5.."}[5m]))
   / sum(rate(copilot_http_requests_total[5m]))
 
-# Readiness (scrape /health/ready from the private network)
-probe_success{job="copilot-api-ready"}
+# Readiness: scrape /health/ready from the private network and alert on the
+# scrape target's own `up` series. `probe_success` would require the blackbox
+# exporter, which V1 does not deploy.
+up{job="copilot-api-ready"} == 0
 ```
 
 ## Terminal outcomes and orphan recovery

@@ -17,13 +17,24 @@ no level-one heading (`page-has-heading-one`, moderate) — the list now renders
 
 ## Standing checks
 
-- Keyboard: Enter submits, Shift+Enter inserts a newline, every control is
-  reachable and operable by keyboard (unit tests in `apps/web/tests/components`).
-- Screen readers: the shell exposes a polite live region; run status is announced
-  through `role="status"` regions; messages are a semantic ordered list.
-- Motion: `prefers-reduced-motion` disables the token-pulse animation.
-- Markdown: assistant output is sanitized; the XSS corpus renders no executable
-  elements.
+Each claim names the automated check that covers it. Checks without a named test
+are not covered automatically and were verified by hand while recording this
+report.
+
+- Keyboard: `apps/web/tests/components/composer.test.tsx` — "Enter submits and
+  clears, Shift+Enter inserts a newline" and "ignores IME Enter and refocuses
+  after submit".
+- Screen-reader shell: `apps/web/tests/shell.test.tsx` — "renders the app shell
+  with the Copilot title link" asserts the polite live region.
+- Transcript semantics: `apps/web/tests/components/transcript.test.tsx` asserts
+  the message list is an ordered `role="list"`.
+- Motion: `apps/web/tests/components/composer.test.tsx` — "token animation is
+  disabled under prefers-reduced-motion".
+- Markdown: `apps/web/tests/components/safe-markdown.test.tsx` — the XSS corpus
+  renders no executable elements.
+
+Not covered by a named test (hand-checked only): control-by-control keyboard
+reachability and the screen-reader announcement of each `role="status"` message.
 
 ## Reproduce
 
@@ -31,3 +42,8 @@ no level-one heading (`page-has-heading-one`, moderate) — the list now renders
 cd apps/web
 pnpm exec playwright test tests/e2e/accessibility.spec.ts
 ```
+
+The journey waits for the conversation list to leave its "Loading conversations…"
+state before `analyze()`, so the list run covers the populated list (links,
+rename/archive controls), not just the loading shell. The counts above predate
+that tightening and must be re-recorded on the next run.

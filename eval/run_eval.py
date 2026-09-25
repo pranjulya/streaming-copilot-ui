@@ -4,8 +4,8 @@ Fake mode is the CI gate: it drives the real HTTP surface with the deterministic
 provider and asserts structure, never free-form text. Live mode is manual and
 requires XAI_API_KEY plus a running API; it writes a report for comparison.
 
-Reports deliberately contain no prompt or response text: case id, terminal
-status, finish reason, and content length only.
+Reports deliberately contain no prompt or response text: case id, kind, terminal
+status, finish reason, content length, pass/fail, and token counts only.
 """
 
 import argparse
@@ -15,12 +15,15 @@ import os
 import re
 import sys
 import uuid
+from collections.abc import Iterable
 from pathlib import Path
 
 API = os.environ.get("EVAL_API", "http://127.0.0.1:8000")
 EVAL_SET = Path(__file__).resolve().parent / "set.json"
 BASELINE = Path(__file__).resolve().parent / "baseline.json"
 DEV_HEADERS = {"X-Dev-User": os.environ.get("EVAL_USER", "eval-runner")}
+
+TERMINAL_EVENTS = ("response.completed", "response.failed", "response.cancelled")
 
 
 def load_set() -> dict:
@@ -31,6 +34,30 @@ def case_turns(case: dict) -> list[dict]:
     if case.get("turns"):
         return list(case["turns"])
     return [{"content": case["prompt"]}]
+
+
+def parse_turn(lines: Iterable[str]) -> tuple[str, str | None, str, dict]:
+    """Fold one turn's NDJSON lines into (terminal, finish_reason, content, usage).
+
+    Shared by the offline runner and the CI test so their parsing cannot drift.
+    Only the assistant answer is kept; prompt text never enters the result.
+    """
+    terminal_type = "unknown"
+    finish_reason: str | None = None
+    content = ""
+    usage: dict = {"input_tokens": None, "output_tokens": None}
+    for line in lines:
+        if not line:
+            continue
+        event = json.loads(line)
+        if event["type"] in TERMINAL_EVENTS:
+            terminal_type = event["type"]
+            finish_reason = event["data"].get("finish_reason")
+            if "usage" in event["data"]:
+                usage = event["data"]["usage"]
+        if event["type"] == "message.completed":
+            content = str(event["data"].get("content", ""))
+    return terminal_type, finish_reason, content, usage
 
 
 def evaluate_case_structure(
@@ -134,21 +161,8 @@ async def run_against_api() -> dict:
                     headers={**DEV_HEADERS, "Idempotency-Key": str(uuid.uuid4())},
                 ) as response:
                     response.raise_for_status()
-                    async for line in response.aiter_lines():
-                        if not line:
-                            continue
-                        event = json.loads(line)
-                        if event["type"] in (
-                            "response.completed",
-                            "response.failed",
-                            "response.cancelled",
-                        ):
-                            terminal_type = event["type"]
-                            finish_reason = event["data"].get("finish_reason")
-                            if "usage" in event["data"]:
-                                usage = event["data"]["usage"]
-                        if event["type"] == "message.completed":
-                            content = str(event["data"].get("content", ""))
+                    lines = [line async for line in response.aiter_lines()]
+                terminal_type, finish_reason, content, usage = parse_turn(lines)
             scored = evaluate_case_structure(
                 case, terminal_type, finish_reason, content, mode=mode
             )

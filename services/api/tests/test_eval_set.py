@@ -165,17 +165,10 @@ def test_fake_mode_evaluation_passes_structurally(caplog) -> None:
                             },
                             headers={"Idempotency-Key": str(uuid.uuid4())},
                         ) as response:
-                            for line in b"".join(response.iter_bytes()).decode().splitlines():
-                                if not line:
-                                    continue
-                                event = json.loads(line)
-                                if event["type"].startswith("response.") and event["type"].endswith(
-                                    ("completed", "failed", "cancelled")
-                                ):
-                                    terminal = event["type"]
-                                    finish_reason = event["data"].get("finish_reason")
-                                if event["type"] == "message.completed":
-                                    content = str(event["data"].get("content", ""))
+                            body = b"".join(response.iter_bytes()).decode()
+                        terminal, finish_reason, content, _usage = run_eval.parse_turn(
+                            body.splitlines()
+                        )
                     scored = run_eval.evaluate_case_structure(
                         case, terminal, finish_reason, content, mode="fake"
                     )

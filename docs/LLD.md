@@ -173,7 +173,7 @@ A live unexpired lease owned by another instance is left alone. After process de
 
 ## 4. Streaming mechanics
 
-- The provider task writes deltas in bounded batches: flush on a small time interval or content threshold, whichever comes first. Exact values are configuration calibrated in Phase 08 load tests.
+- The provider task writes deltas in bounded batches: flush on a small time interval or content threshold, whichever comes first. Exact values are calibrated by the Phase 08 load tests; they stay uncalibrated until a production-like soak is recorded (`docs/configuration.md` §7).
 - The follower reads committed events above its cursor and waits with bounded polling. PostgreSQL `LISTEN/NOTIFY` may replace polling only if measurements show the need; correctness cannot depend on notifications.
 - HTTP proxy buffering is disabled for NDJSON routes.
 - Every serialized record ends in newline and is flushed promptly.

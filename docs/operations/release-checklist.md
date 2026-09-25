@@ -10,10 +10,14 @@ approval — an agent must not tick it.
       double-submit, rate limits, CORS/CSRF, log-redaction — see the workflow in
       `.github/workflows/ci.yml` and the suites under `services/api/tests` and
       `apps/web/tests`
-- [x] Test suites: API **181 passed** (1 opt-in live skip) with
-      `REHEARSE_RESTORE=1`, web **92 passed**, Playwright **6 journeys**
+- [x] Test suites: API **201 passed** (1 opt-in live skip) with
+      `REHEARSE_RESTORE=1`, web **108 passed**, Playwright **6 journeys**
       (stream completion, cancel, reconnect, retry/regenerate, ambiguous send,
-      axe accessibility)
+      axe accessibility). The intermittent API failures seen earlier in this
+      phase (a different unrelated test failing between runs) are gone: after the
+      cancel/flush race fix on `phase-03`, 9 consecutive full-suite runs were
+      green (6 default, 3 with `REHEARSE_RESTORE=1`). Playwright journeys were
+      **not** re-run here — no browsers or dev servers in this environment.
 - [ ] Schema drift: CI runs `alembic upgrade head`; `alembic check` is not a CI step
 - [x] Restore rehearsal: `scripts/rehearse_restore.sh` dumps, restores into a
       scratch database, runs alembic against that scratch URI, and requires
@@ -43,3 +47,10 @@ approval — an agent must not tick it.
 V1 is forward-only: the additive migrations tolerate the previous app image; a bad
 deploy rolls back by shipping the previous image. The destructive path (event
 compaction policy changes, retention lowering) requires a new rehearsal.
+
+The restore rehearsal (`scripts/rehearse_restore.sh`) proves the database copy and
+that Alembic reports `(head)` on that copy. The **app-image rollback** — running
+the previous image against the migrated schema — has **not** been rehearsed:
+doing so needs the previous image and Docker, neither of which is available in
+this environment. Record that rehearsal (or an explicit waiver) before release;
+until then scenario 11 of the runbook is untested end to end.
