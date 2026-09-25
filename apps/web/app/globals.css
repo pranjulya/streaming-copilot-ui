@@ -1,0 +1,121 @@
+:root {
+  color-scheme: light dark;
+  font-family: system-ui, sans-serif;
+}
+
+body {
+  margin: 0;
+}
+
+.app-shell {
+  display: flex;
+  min-height: 100vh;
+  flex-direction: column;
+}
+
+.app-header {
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid color-mix(in srgb, currentColor 15%, transparent);
+}
+
+.app-title {
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.app-main {
+  flex: 1;
+  padding: 1rem;
+}
+
+.live-region {
+  padding: 0 1rem 1rem;
+  min-height: 1.25rem;
+}
+
+.conversation-items,
+.transcript-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.composer-hint {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.conversation-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid color-mix(in srgb, currentColor 10%, transparent);
+}
+
+.message-bubble {
+  margin: 0.75rem 0;
+  padding: 0.75rem;
+  border-radius: 0.5rem;
+  background: color-mix(in srgb, currentColor 6%, transparent);
+}
+
+.message-bubble--user {
+  background: color-mix(in srgb, currentColor 12%, transparent);
+}
+
+.message-role {
+  margin: 0 0 0.25rem;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.message-text {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.message-status,
+.status-text {
+  font-size: 0.85rem;
+  opacity: 0.8;
+}
+
+.token-animation {
+  display: inline-block;
+  animation: token-pulse 1s ease-in-out infinite;
+}
+
+@keyframes token-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .token-animation {
+    animation: none;
+  }
+}
+
+.composer {
+  display: grid;
+  gap: 0.5rem;
+  margin-top: 1.5rem;
+}
+
+.composer-input {
+  width: 100%;
+  resize: vertical;
+  font: inherit;
+}

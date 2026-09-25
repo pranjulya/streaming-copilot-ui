@@ -80,7 +80,9 @@ def main():
             with urllib.request.urlopen(
                 "http://127.0.0.1:3000", timeout=30
             ) as response:
-                assert "<h1>Copilot</h1>" in response.read().decode()
+                # The real chat shell replaced the Phase 00 placeholder heading;
+                # assert the list region the app actually renders.
+                assert 'aria-label="Conversations"' in response.read().decode()
             try:
                 response = urllib.request.urlopen(
                     "http://127.0.0.1:3000/health/ready", timeout=5
