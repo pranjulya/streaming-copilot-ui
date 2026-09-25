@@ -70,9 +70,9 @@ def test_planned_provider_streams_through_the_supervisor_boundary() -> None:
     from app.providers.protocol import CancelSignal
 
     async def scenario() -> None:
-        from app.api.dev import _plan_provider
+        from app.providers.fake import planned_provider_from_steps
 
-        provider = _plan_provider([{"deltas": ["he", "llo"], "finish_reason": "stop"}])
+        provider = planned_provider_from_steps([{"deltas": ["he", "llo"], "finish_reason": "stop"}])
         assert isinstance(provider, PlannedFakeProvider)
         deltas = [delta async for delta in provider.stream([], signal=CancelSignal())]
         assert "".join(delta.text for delta in deltas) == "hello"

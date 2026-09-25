@@ -28,6 +28,7 @@ class Settings(BaseSettings):
         "or private chain-of-thought. If you are unsure, say so."
     )
     dev_user_id: str | None = None
+    fake_provider_plan: str = ""
     auth_jwt_issuer: str | None = None
     auth_jwt_audience: str | None = None
     auth_jwt_jwks_url: str | None = None

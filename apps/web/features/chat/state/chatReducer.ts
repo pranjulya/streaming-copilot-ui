@@ -49,6 +49,7 @@ export type ChatAction =
       conversationId: string;
       status: TurnStatus;
       content?: string;
+      runId?: string;
     }
   | { type: "restart-turn"; conversationId: string };
 
@@ -124,9 +125,11 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       }));
     case "canonical-status":
       return withTurn(state, action.conversationId, (turn) => {
+        const runId = action.runId ?? turn.runId;
         if (turn.status === "completed") {
           return {
             ...turn,
+            runId,
             assistantContent:
               action.content === undefined
                 ? turn.assistantContent
@@ -135,6 +138,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         }
         return {
           ...turn,
+          runId,
           status: action.status,
           assistantContent:
             action.content === undefined

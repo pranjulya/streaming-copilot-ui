@@ -1,5 +1,6 @@
 import asyncio
 from collections.abc import AsyncIterator, Sequence
+from typing import Any
 
 from app.providers.protocol import (
     CancelSignal,
@@ -81,3 +82,20 @@ class PlannedFakeProvider:
         step = self._steps[min(self._calls, len(self._steps) - 1)]
         self._calls += 1
         return step.stream(messages, signal=signal)
+
+
+def planned_provider_from_steps(steps: list[dict[str, Any]]) -> PlannedFakeProvider:
+    """Build the scripted provider shared by the environment plan and the dev hook."""
+
+    return PlannedFakeProvider(
+        [
+            FakeProvider(
+                deltas=step.get("deltas", []),
+                finish_reason=step.get("finish_reason", "stop"),
+                fail_after=step.get("fail_after"),
+                delay_seconds=float(step.get("delay_seconds", 0.0)),
+                ignores_cancel=bool(step.get("ignores_cancel", False)),
+            )
+            for step in steps
+        ]
+    )

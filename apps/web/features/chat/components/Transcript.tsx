@@ -15,6 +15,7 @@ import {
   busyActiveRunId,
   followActiveRun,
   pollRunUntilTerminal,
+  resolveActiveRunId,
   streamTurn,
   supportsStreaming,
   terminalStatus,
@@ -180,12 +181,39 @@ export function Transcript({
           onResult: dispatchEvent,
         });
       } catch {
+        // A dropped follow is retried when connectivity returns.
+        needsRecoveryRef.current = true;
         setNotice("Reconnect failed; showing canonical history instead.");
       } finally {
         controllerRef.current = null;
       }
     },
     [dispatchEvent],
+  );
+
+  const settleRun = useCallback(
+    async (runId: string) => {
+      try {
+        const settled = await pollRunUntilTerminal(client, runId, {
+          delayMs: 300,
+          attempts: 200,
+        });
+        if (settled) {
+          dispatch({
+            type: "canonical-status",
+            conversationId,
+            status: settled.status,
+            content: settled.partial_content,
+            runId,
+          });
+          return;
+        }
+      } catch {
+        // An unreadable status leaves the turn reconciling for the next retry.
+      }
+      dispatch({ type: "reconcile", conversationId });
+    },
+    [client, conversationId],
   );
 
   const submit = useCallback(
@@ -205,23 +233,21 @@ export function Transcript({
       }
       if (result.outcome === "incomplete") {
         dispatch({ type: "reconcile", conversationId });
-        const runId = result.runId ?? currentTurn().runId;
+        let runId = result.runId ?? currentTurn().runId;
+        if (runId === null) {
+          // A non-streaming client never reads response.started; the run is
+          // discovered from the conversation snapshot instead.
+          try {
+            runId = await resolveActiveRunId(client, conversationId);
+          } catch {
+            // The run stays unknown; history still reconciles below.
+          }
+        }
         if (runId !== null) {
           if (supportsStreaming()) {
             await attachToActiveRun(runId, currentTurn().lastSequence);
           } else {
-            const settled = await pollRunUntilTerminal(client, runId, {
-              delayMs: 200,
-              attempts: 150,
-            });
-            if (settled) {
-              dispatch({
-                type: "canonical-status",
-                conversationId,
-                status: settled.status,
-                content: settled.partial_content,
-              });
-            }
+            await settleRun(runId);
           }
         }
       }
@@ -287,13 +313,23 @@ export function Transcript({
       currentTurn,
       loadSnapshot,
       runStreamedTurn,
+      settleRun,
     ],
   );
 
   const stop = useCallback(async () => {
     controllerRef.current?.abort();
     dispatch({ type: "stop-requested", conversationId });
-    const runId = currentTurn().runId;
+    let runId = currentTurn().runId;
+    if (runId === null) {
+      // Stop before response.started: the create may already have committed, so
+      // resolve the run before canceling instead of sitting on stopping forever.
+      try {
+        runId = await resolveActiveRunId(client, conversationId);
+      } catch {
+        // Unknown outcome; reconcile rather than assume a failure.
+      }
+    }
     if (runId !== null) {
       const cancel = new AbortController();
       const timer = window.setTimeout(() => cancel.abort(), 4000);
@@ -304,25 +340,17 @@ export function Transcript({
       } finally {
         window.clearTimeout(timer);
       }
-      const settled = await pollRunUntilTerminal(client, runId, {
-        delayMs: 300,
-        attempts: 20,
-      });
-      if (settled) {
-        dispatch({
-          type: "canonical-status",
-          conversationId,
-          status: settled.status,
-          content: settled.partial_content,
-        });
-      }
+      await settleRun(runId);
+    } else {
+      // Cancel outcome unknown: reconciling, never a terminal guess.
+      dispatch({ type: "reconcile", conversationId });
     }
     try {
       await loadSnapshot();
     } catch {
       // Best-effort.
     }
-  }, [client, conversationId, currentTurn, loadSnapshot]);
+  }, [client, conversationId, currentTurn, loadSnapshot, settleRun]);
 
   const retry = useCallback(async () => {
     const runId = currentTurn().runId;
@@ -422,11 +450,15 @@ export function Transcript({
     if (run == null || terminalStatus(run.status)) return;
     if (followedRunRef.current === run.id) return;
     followedRunRef.current = run.id;
-    void attachToActiveRun(
-      run.id,
-      currentTurn().lastSequence || run.last_sequence,
-    );
-  }, [attachToActiveRun, currentTurn, snapshot]);
+    if (supportsStreaming()) {
+      void attachToActiveRun(
+        run.id,
+        currentTurn().lastSequence || run.last_sequence,
+      );
+    } else {
+      void settleRun(run.id);
+    }
+  }, [attachToActiveRun, currentTurn, settleRun, snapshot]);
 
   const turnForReconcile =
     state.turnsByConversation[conversationId] ?? emptyTurn();

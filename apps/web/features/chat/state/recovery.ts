@@ -1,4 +1,4 @@
-import { ClientError } from "../api/client";
+import { ClientError, problemFromResponse } from "../api/client";
 import type { ConversationClient, RunSnapshot } from "../api/client";
 import { followResponse, startResponse } from "../api/stream";
 import { parseNdjson } from "../stream/parseNdjson";
@@ -145,7 +145,7 @@ async function streamFrom(
     signal,
   });
   if (!response.ok) {
-    throw await problemFromResponse(response);
+    throw await problemFromResponse(response, "Request failed");
   }
   if (response.body === null) return;
   for await (const result of parseNdjson(response.body, signal)) {
@@ -153,34 +153,12 @@ async function streamFrom(
   }
 }
 
-async function problemFromResponse(response: Response): Promise<ClientError> {
-  let code = "internal_error";
-  let diagnosticId: string | null = null;
-  let extensions: Record<string, unknown> = {};
-  try {
-    const problem = (await response.json()) as {
-      code?: string;
-      diagnostic_id?: string;
-      [key: string]: unknown;
-    };
-    const {
-      code: problemCode,
-      diagnostic_id: problemDiagnostic,
-      ...rest
-    } = problem;
-    code = problemCode ?? code;
-    diagnosticId = problemDiagnostic ?? null;
-    extensions = rest;
-  } catch {
-    // Non-streaming error bodies are reported with default code.
-  }
-  return new ClientError(
-    response.status,
-    code,
-    "Request failed",
-    diagnosticId,
-    extensions,
-  );
+export async function resolveActiveRunId(
+  client: ConversationClient,
+  conversationId: string,
+): Promise<string | null> {
+  const latest = await client.getConversation(conversationId);
+  return latest.active_run?.id ?? null;
 }
 
 export async function pollRunUntilTerminal(

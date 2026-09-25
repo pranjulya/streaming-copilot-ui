@@ -676,6 +676,27 @@ describe("chatReducer", () => {
     expect(turn.assistantContent).toBe("answer");
   });
 
+  test("canonical-status records a run discovered during reconciliation", () => {
+    const state = reduce([
+      {
+        type: "optimistic",
+        conversationId: CONVERSATION,
+        clientMessageId: "client-1",
+        content: "q",
+      },
+      { type: "stop-requested", conversationId: CONVERSATION },
+      {
+        type: "canonical-status",
+        conversationId: CONVERSATION,
+        status: "cancelled",
+        runId: "run-9",
+      },
+    ]);
+    const turn = state.turnsByConversation[CONVERSATION];
+    expect(turn.status).toBe("cancelled");
+    expect(turn.runId).toBe("run-9");
+  });
+
   test("stop requested then canonical cancelled keeps the partial text", () => {
     const state = reduce([
       {

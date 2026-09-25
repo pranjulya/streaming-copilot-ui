@@ -1,7 +1,6 @@
 import asyncio
 import json
 import logging
-import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 
@@ -23,22 +22,13 @@ logger = logging.getLogger(__name__)
 
 
 def _build_provider(config: Settings) -> LlmProvider:
-    from app.providers.fake import FakeProvider, PlannedFakeProvider
+    from app.providers.fake import FakeProvider, planned_provider_from_steps
 
     has_key = bool(config.xai_api_key and config.xai_api_key.get_secret_value().strip())
     if config.app_env == "development" and not has_key:
-        plan = os.environ.get("FAKE_PROVIDER_PLAN", "").strip()
+        plan = config.fake_provider_plan.strip()
         if plan:
-            steps = [
-                FakeProvider(
-                    deltas=step.get("deltas", []),
-                    finish_reason=step.get("finish_reason", "stop"),
-                    fail_after=step.get("fail_after"),
-                    delay_seconds=float(step.get("delay_seconds", 0.0)),
-                )
-                for step in json.loads(plan)
-            ]
-            return PlannedFakeProvider(steps)
+            return planned_provider_from_steps(json.loads(plan))
         return FakeProvider(
             deltas=[
                 "This is the local fake provider. ",

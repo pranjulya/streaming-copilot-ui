@@ -7,6 +7,7 @@ import type {
   ConversationClient,
   ConversationSnapshot,
   Message,
+  RunSnapshot,
 } from "../../features/chat/api/client";
 import { Transcript } from "../../features/chat/components/Transcript";
 
@@ -79,6 +80,28 @@ function envelope(
     run_id: "0195f4da-0000-7000-8000-0000000000aa",
     data,
   });
+}
+
+function runSnapshot(
+  status: RunSnapshot["status"],
+  id = "run-1",
+  partialContent = "",
+): RunSnapshot {
+  return {
+    id,
+    conversation_id: CONVERSATION_ID,
+    user_message_id: "u1",
+    assistant_message_id: "a1",
+    status,
+    attempt: 1,
+    last_sequence: 3,
+    cancel_requested_at: null,
+    error_code: null,
+    diagnostic_id: null,
+    partial_content: partialContent,
+    created_at: "2026-09-09T10:30:00.000Z",
+    completed_at: status === "completed" ? "2026-09-09T10:30:05.000Z" : null,
+  };
 }
 
 function streamingBody(
@@ -407,6 +430,136 @@ describe("Transcript streaming", () => {
           String(call[0]).includes("/response-runs/active-run-2/stream"),
         ),
       ).toBe(true),
+    );
+  });
+
+  test("degraded non-streaming send polls the run until terminal", async () => {
+    // A browser without ReadableStream cannot read the NDJSON body, so the send
+    // must discover the run from the conversation snapshot and poll it.
+    vi.stubGlobal("ReadableStream", undefined);
+    let completed = false;
+    let conversationCall = 0;
+    const client = {
+      getConversation: vi.fn().mockImplementation(() => {
+        conversationCall += 1;
+        if (completed) {
+          return Promise.resolve(snapshotWith("Backpressure is flow control."));
+        }
+        if (conversationCall === 1) return Promise.resolve(snapshotWith(null));
+        return Promise.resolve({
+          ...snapshotWith(null),
+          active_run: runSnapshot("streaming", "run-9"),
+        });
+      }),
+      getRun: vi.fn().mockImplementation(() => {
+        completed = true;
+        return Promise.resolve(
+          runSnapshot("completed", "run-9", "Backpressure is flow control."),
+        );
+      }),
+    } as unknown as ConversationClient;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(null, { status: 200 })),
+    );
+
+    render(<Transcript client={client} conversationId={CONVERSATION_ID} />);
+    await screen.findByRole("heading", { name: "Explain backpressure" });
+    await userEvent.type(
+      screen.getByLabelText("Message"),
+      "Explain backpressure{Enter}",
+    );
+
+    expect(
+      await screen.findByText(
+        "Backpressure is flow control.",
+        {},
+        { timeout: 4000 },
+      ),
+    ).toBeTruthy();
+    expect(client.getRun).toHaveBeenCalledWith("run-9");
+  });
+
+  test("a dropped follow is retried when connectivity returns", async () => {
+    const client = {
+      getConversation: vi.fn().mockResolvedValue({
+        ...snapshotWith(null),
+        active_run: runSnapshot("streaming", "run-live"),
+      }),
+    } as unknown as ConversationClient;
+    let followCalls = 0;
+    const fetchImpl = vi.fn().mockImplementation((url: string) => {
+      if (String(url).includes("/response-runs/run-live/stream")) {
+        followCalls += 1;
+        if (followCalls === 1) return Promise.reject(new TypeError("network"));
+        return Promise.resolve(
+          new Response(
+            streamingBody([
+              envelope(4, "response.completed", { finish_reason: "stop" }),
+            ]),
+            {
+              status: 200,
+              headers: { "content-type": "application/x-ndjson" },
+            },
+          ),
+        );
+      }
+      return Promise.resolve(new Response(null, { status: 200 }));
+    });
+    vi.stubGlobal("fetch", fetchImpl);
+
+    render(<Transcript client={client} conversationId={CONVERSATION_ID} />);
+    await screen.findByRole("heading", { name: "Explain backpressure" });
+    await waitFor(() => expect(followCalls).toBe(1));
+
+    window.dispatchEvent(new Event("online"));
+
+    await waitFor(() => expect(followCalls).toBe(2));
+  });
+
+  test("stop before response.started cancels the discovered run", async () => {
+    let cancelled = false;
+    let activeRun: RunSnapshot | null = null;
+    const client = {
+      getConversation: vi.fn().mockImplementation(() =>
+        Promise.resolve({
+          ...snapshotWith(null),
+          active_run: cancelled ? null : activeRun,
+        }),
+      ),
+      getRun: vi
+        .fn()
+        .mockImplementation(() =>
+          Promise.resolve(
+            runSnapshot(cancelled ? "cancelled" : "streaming", "run-9", "hi"),
+          ),
+        ),
+      cancelRun: vi.fn().mockImplementation(() => {
+        cancelled = true;
+        return Promise.resolve(runSnapshot("cancelling", "run-9"));
+      }),
+    } as unknown as ConversationClient;
+    const fetchImpl = vi.fn().mockImplementation(
+      (_url: string, init: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          init.signal?.addEventListener("abort", () => {
+            const error = new Error("aborted");
+            error.name = "AbortError";
+            reject(error);
+          });
+        }),
+    );
+    vi.stubGlobal("fetch", fetchImpl);
+
+    render(<Transcript client={client} conversationId={CONVERSATION_ID} />);
+    await screen.findByRole("heading", { name: "Explain backpressure" });
+    await userEvent.type(screen.getByLabelText("Message"), "hi{Enter}");
+    activeRun = runSnapshot("streaming", "run-9", "hi");
+    await userEvent.click(await screen.findByRole("button", { name: "Stop" }));
+
+    await waitFor(() => expect(client.cancelRun).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Stop" })).toBeNull(),
     );
   });
 });

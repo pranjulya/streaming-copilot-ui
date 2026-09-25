@@ -1,4 +1,4 @@
-import { ClientError, problemFromResponse } from "./client";
+import { problemFromResponse } from "./client";
 import { parseNdjson, type ParseResult } from "../stream/parseNdjson";
 
 export type StartResponseOptions = {
