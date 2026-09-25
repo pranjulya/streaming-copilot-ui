@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
@@ -6,6 +7,7 @@ from contextlib import asynccontextmanager, suppress
 from fastapi import FastAPI
 
 from app.api.conversations import router as conversations_router
+from app.api.dev import router as dev_router
 from app.api.errors import install_error_handlers
 from app.api.health import router
 from app.api.responses import router as responses_router
@@ -20,10 +22,13 @@ logger = logging.getLogger(__name__)
 
 
 def _build_provider(config: Settings) -> LlmProvider:
-    from app.providers.fake import FakeProvider
+    from app.providers.fake import FakeProvider, planned_provider_from_steps
 
     has_key = bool(config.xai_api_key and config.xai_api_key.get_secret_value().strip())
     if config.app_env == "development" and not has_key:
+        plan = config.fake_provider_plan.strip()
+        if plan:
+            return planned_provider_from_steps(json.loads(plan))
         return FakeProvider(
             deltas=[
                 "This is the local fake provider. ",
@@ -82,4 +87,6 @@ def create_app(settings: Settings | None = None, provider: LlmProvider | None = 
     app.include_router(conversations_router)
     app.include_router(runs_router)
     app.include_router(responses_router)
+    if config.app_env == "development":
+        app.include_router(dev_router)
     return app

@@ -84,6 +84,10 @@ class GenerationSupervisor:
             return
         self._tasks[run_id] = asyncio.create_task(self._supervise_run(run_id))
 
+    def set_provider(self, provider: LlmProvider) -> None:
+        """Development/test hook: swap the provider used for future runs."""
+        self._provider = provider
+
     async def shutdown(self, grace_seconds: float) -> None:
         self._admitting = False
         if self._tasks:

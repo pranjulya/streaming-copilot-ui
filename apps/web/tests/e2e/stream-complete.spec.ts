@@ -1,17 +1,23 @@
 import { expect, test } from "@playwright/test";
 
+import { send, setFakePlan, startConversation } from "./helpers";
+
 test("streams a completion and reload keeps the canonical text and ids", async ({
   page,
 }) => {
-  await page.goto("/");
-  await page.getByRole("button", { name: "New conversation" }).click();
-  await page.getByRole("link", { name: "New conversation" }).click();
-  await expect(page).toHaveURL(/\/c\/[0-9a-f-]{36}$/);
+  await setFakePlan([
+    {
+      deltas: [
+        "This is the local fake provider. ",
+        "Set XAI_API_KEY to stream real model output.",
+      ],
+      delay_seconds: 0.02,
+    },
+  ]);
+  await startConversation(page);
   const conversationPath = new URL(page.url()).pathname;
 
-  const composer = page.getByRole("textbox", { name: "Message" });
-  await composer.fill("Explain backpressure in streaming APIs");
-  await composer.press("Enter");
+  await send(page, "Explain backpressure in streaming APIs");
 
   const assistantBubble = page.locator(".message-bubble--assistant").first();
   await expect(assistantBubble).toContainText(

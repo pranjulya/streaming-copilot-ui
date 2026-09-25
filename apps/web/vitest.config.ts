@@ -11,6 +11,6 @@ export default defineConfig({
   oxc: { jsx: { runtime: "automatic" } },
   test: {
     environment: "node",
-    exclude: ["**/node_modules/**", "**/dist/**", "tests/e2e/**"],
+    exclude: ["**/node_modules/**", "**/dist/**", ".next/**", "tests/e2e/**"],
   },
 });

@@ -1,5 +1,6 @@
 import asyncio
 from collections.abc import AsyncIterator, Sequence
+from typing import Any
 
 from app.providers.protocol import (
     CancelSignal,
@@ -57,3 +58,44 @@ class FakeProvider:
         if self.fail_after is not None and self.fail_after >= len(self.deltas):
             raise ProviderStreamError(self.failure)
         yield ProviderDelta(finish_reason=self.finish_reason, usage=self.usage)
+
+
+class PlannedFakeProvider:
+    """Cycles through scripted steps per stream call; the last step repeats.
+
+    Used by local/e2e runs through the FAKE_PROVIDER_PLAN environment variable so
+    failure-injection journeys (retry, reconnect, cancel races) are deterministic.
+    """
+
+    def __init__(self, steps: Sequence[FakeProvider]) -> None:
+        if not steps:
+            raise ValueError("PlannedFakeProvider needs at least one step")
+        self._steps = list(steps)
+        self._calls = 0
+
+    def stream(
+        self,
+        messages: Sequence[ProviderMessage],
+        *,
+        signal: CancelSignal,
+    ) -> AsyncIterator[ProviderDelta]:
+        step = self._steps[min(self._calls, len(self._steps) - 1)]
+        self._calls += 1
+        return step.stream(messages, signal=signal)
+
+
+def planned_provider_from_steps(steps: list[dict[str, Any]]) -> PlannedFakeProvider:
+    """Build the scripted provider shared by the environment plan and the dev hook."""
+
+    return PlannedFakeProvider(
+        [
+            FakeProvider(
+                deltas=step.get("deltas", []),
+                finish_reason=step.get("finish_reason", "stop"),
+                fail_after=step.get("fail_after"),
+                delay_seconds=float(step.get("delay_seconds", 0.0)),
+                ignores_cancel=bool(step.get("ignores_cancel", False)),
+            )
+            for step in steps
+        ]
+    )

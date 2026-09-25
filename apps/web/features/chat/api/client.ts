@@ -92,12 +92,14 @@ export class ClientError extends Error {
   readonly kind: ClientErrorKind;
   readonly retryable: boolean;
   readonly diagnosticId: string | null;
+  readonly extensions: Record<string, unknown>;
 
   constructor(
     status: number,
     code: string,
     message: string,
     diagnosticId: string | null,
+    extensions: Record<string, unknown> = {},
   ) {
     super(message);
     const { kind, retryable } = classify(status);
@@ -107,6 +109,7 @@ export class ClientError extends Error {
     this.kind = kind;
     this.retryable = retryable;
     this.diagnosticId = diagnosticId;
+    this.extensions = extensions;
   }
 }
 
@@ -114,10 +117,12 @@ type ProblemBody = {
   code?: string;
   title?: string;
   diagnostic_id?: string;
+  [key: string]: unknown;
 };
 
 export async function problemFromResponse(
   response: Response,
+  fallbackTitle = "Request failed",
 ): Promise<ClientError> {
   let problem: ProblemBody = {};
   try {
@@ -125,11 +130,13 @@ export async function problemFromResponse(
   } catch {
     problem = {};
   }
+  const { code, title, diagnostic_id: diagnosticId, ...extensions } = problem;
   return new ClientError(
     response.status,
-    problem.code ?? "internal_error",
-    problem.title ?? "Request failed",
-    problem.diagnostic_id ?? null,
+    code ?? "internal_error",
+    title ?? fallbackTitle,
+    diagnosticId ?? null,
+    extensions,
   );
 }
 
@@ -217,6 +224,26 @@ export class ConversationClient {
     if (options.limit !== undefined) params.set("limit", String(options.limit));
     const query = params.toString();
     return this.request(`/v1/conversations/${id}${query ? `?${query}` : ""}`, {
+      signal: options.signal,
+    });
+  }
+
+  getRun(
+    runId: string,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<RunSnapshot> {
+    return this.request(`/v1/response-runs/${runId}`, {
+      signal: options.signal,
+    });
+  }
+
+  cancelRun(
+    runId: string,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<RunSnapshot> {
+    return this.request(`/v1/response-runs/${runId}/cancel`, {
+      method: "POST",
+      body: {},
       signal: options.signal,
     });
   }

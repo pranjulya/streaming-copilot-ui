@@ -8,6 +8,8 @@ export default defineConfig({
   timeout: 60_000,
   expect: { timeout: 15_000 },
   retries: 0,
+  workers: 1,
+  fullyParallel: false,
   reporter: [["list"]],
   use: {
     baseURL: `http://127.0.0.1:${WEB_PORT}`,

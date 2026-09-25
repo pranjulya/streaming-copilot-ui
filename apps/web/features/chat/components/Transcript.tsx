@@ -10,8 +10,18 @@ import {
   type ConversationClient,
   type Message,
 } from "../api/client";
-import { startResponse } from "../api/stream";
 import { chatReducer, emptyTurn, initialChatState } from "../state/chatReducer";
+import {
+  busyActiveRunId,
+  followActiveRun,
+  pollRunUntilTerminal,
+  resolveActiveRunId,
+  streamTurn,
+  supportsStreaming,
+  terminalStatus,
+  type TurnKind,
+} from "../state/recovery";
+import type { ParseResult } from "../stream/parseNdjson";
 import { Composer } from "./Composer";
 import { MessageBubble } from "./MessageBubble";
 import { StatusText } from "./StatusText";
@@ -23,6 +33,10 @@ const ACTIVE_STATUSES = new Set([
   "stopping",
   "reconciling",
 ]);
+
+const retryableNotice = "Send failed; check your connection and try again.";
+const rejectedNotice = "Send failed; your message was not stored.";
+const rateLimitedNotice = "Rate limited — try again in a moment.";
 
 async function loadConversationPages(
   client: ConversationClient,
@@ -67,6 +81,12 @@ export function Transcript({
   const [state, dispatch] = useReducer(chatReducer, initialChatState);
   const conversationIdRef = useRef(conversationId);
   conversationIdRef.current = conversationId;
+  const controllerRef = useRef<AbortController | null>(null);
+  const followedRunRef = useRef<string | null>(null);
+  const seenReconcileRef = useRef<string | null>(null);
+  const needsRecoveryRef = useRef(false);
+  const stateRef = useRef(state);
+  stateRef.current = state;
 
   const loadSnapshot = useCallback(async () => {
     const requestedId = conversationId;
@@ -82,6 +102,11 @@ export function Transcript({
     setSnapshot(null);
     setError(null);
     dispatch({ type: "navigate", conversationId });
+    if (!supportsStreaming()) {
+      setNotice(
+        "Live streaming is unavailable here; answers appear when ready.",
+      );
+    }
     void loadConversationPages(client, conversationId)
       .then((result) => {
         if (active && conversationIdRef.current === conversationId) {
@@ -105,6 +130,92 @@ export function Transcript({
     if (error !== null) errorRef.current?.focus();
   }, [error]);
 
+  const dispatchEvent = useCallback(
+    (result: ParseResult) => {
+      if (result.kind === "event") {
+        dispatch({ type: "event", conversationId, event: result.event });
+      } else {
+        dispatch({ type: "reconcile", conversationId });
+        setNotice(
+          "The stream was interrupted; the canonical answer is shown instead.",
+        );
+      }
+    },
+    [conversationId],
+  );
+
+  const currentTurn = useCallback(
+    () => stateRef.current.turnsByConversation[conversationId] ?? emptyTurn(),
+    [conversationId],
+  );
+
+  const runStreamedTurn = useCallback(
+    async (turn: TurnKind, clientMessageId: string, idempotencyKey: string) => {
+      const controller = new AbortController();
+      controllerRef.current = controller;
+      try {
+        return await streamTurn({
+          client,
+          turn,
+          clientMessageId,
+          idempotencyKey,
+          signal: controller.signal,
+          onResult: dispatchEvent,
+        });
+      } finally {
+        controllerRef.current = null;
+      }
+    },
+    [client, dispatchEvent],
+  );
+
+  const attachToActiveRun = useCallback(
+    async (runId: string, afterSequence: number) => {
+      const controller = new AbortController();
+      controllerRef.current = controller;
+      try {
+        await followActiveRun({
+          runId,
+          afterSequence,
+          signal: controller.signal,
+          onResult: dispatchEvent,
+        });
+      } catch {
+        // A dropped follow is retried when connectivity returns.
+        needsRecoveryRef.current = true;
+        setNotice("Reconnect failed; showing canonical history instead.");
+      } finally {
+        controllerRef.current = null;
+      }
+    },
+    [dispatchEvent],
+  );
+
+  const settleRun = useCallback(
+    async (runId: string) => {
+      try {
+        const settled = await pollRunUntilTerminal(client, runId, {
+          delayMs: 300,
+          attempts: 200,
+        });
+        if (settled) {
+          dispatch({
+            type: "canonical-status",
+            conversationId,
+            status: settled.status,
+            content: settled.partial_content,
+            runId,
+          });
+          return;
+        }
+      } catch {
+        // An unreadable status leaves the turn reconciling for the next retry.
+      }
+      dispatch({ type: "reconcile", conversationId });
+    },
+    [client, conversationId],
+  );
+
   const submit = useCallback(
     async (content: string) => {
       const clientMessageId = newClientMessageId();
@@ -115,49 +226,260 @@ export function Transcript({
         clientMessageId,
         content,
       });
-      const controller = new AbortController();
-      try {
-        await startResponse({
-          conversationId,
-          content,
-          clientMessageId,
-          idempotencyKey,
-          signal: controller.signal,
-          onResult: (result) => {
-            if (result.kind === "event") {
-              dispatch({ type: "event", conversationId, event: result.event });
-            } else if (result.kind === "protocol") {
-              dispatch({ type: "reconcile", conversationId });
-              setNotice(
-                "The stream was interrupted; the canonical answer is shown instead.",
-              );
-            } else {
-              setNotice(
-                "The stream was interrupted; the canonical answer is shown instead.",
-              );
-            }
-          },
-        });
-      } catch (caught: unknown) {
-        dispatch({ type: "sendFailed", conversationId });
-        setNotice(
-          caught instanceof ClientError
-            ? `Send failed (${caught.code}).`
-            : "Send failed; check your connection.",
-        );
-        throw caught instanceof Error ? caught : new Error("Send failed");
-      } finally {
-        if (conversationIdRef.current === conversationId) {
+      const turn: TurnKind = { kind: "create", conversationId, content };
+      let result = await runStreamedTurn(turn, clientMessageId, idempotencyKey);
+      if (result.outcome === "aborted") {
+        return;
+      }
+      if (result.outcome === "incomplete") {
+        dispatch({ type: "reconcile", conversationId });
+        let runId = result.runId ?? currentTurn().runId;
+        if (runId === null) {
+          // A non-streaming client never reads response.started; the run is
+          // discovered from the conversation snapshot instead.
           try {
-            await loadSnapshot();
+            runId = await resolveActiveRunId(client, conversationId);
           } catch {
-            // The canonical refetch is best-effort after streaming ends.
+            // The run stays unknown; history still reconciles below.
+          }
+        }
+        if (runId !== null) {
+          if (supportsStreaming()) {
+            await attachToActiveRun(runId, currentTurn().lastSequence);
+          } else {
+            await settleRun(runId);
           }
         }
       }
+      if (result.outcome === "network-unknown") {
+        setNotice("Connection lost; checking whether your message was saved…");
+        result = await runStreamedTurn(turn, clientMessageId, idempotencyKey);
+      }
+      if (result.outcome === "network-unknown") {
+        try {
+          const latest = await client.getConversation(conversationId);
+          if (latest.active_run) {
+            await attachToActiveRun(
+              latest.active_run.id,
+              currentTurn().lastSequence,
+            );
+          } else if (
+            !latest.messages.items.some(
+              (message) => message.client_message_id === clientMessageId,
+            )
+          ) {
+            setNotice("Your message was not stored. You can send it again.");
+            dispatch({ type: "sendFailed", conversationId });
+            throw new Error("Send failed");
+          }
+        } catch (caught: unknown) {
+          if (caught instanceof Error && caught.message === "Send failed") {
+            throw caught;
+          }
+          needsRecoveryRef.current = true;
+          setNotice(retryableNotice);
+        }
+      } else if (result.outcome === "rejected") {
+        const active = busyActiveRunId(result.error);
+        if (active !== null) {
+          setNotice("Another answer is already running; following it.");
+          await attachToActiveRun(active, 0);
+        } else {
+          const code =
+            result.error instanceof ClientError
+              ? result.error.code
+              : "internal_error";
+          setNotice(
+            code === "rate_limited" ? rateLimitedNotice : rejectedNotice,
+          );
+          dispatch({ type: "sendFailed", conversationId });
+          throw result.error instanceof Error
+            ? result.error
+            : new Error("Send failed");
+        }
+      }
+      if (conversationIdRef.current === conversationId) {
+        try {
+          await loadSnapshot();
+        } catch {
+          // The canonical refetch is best-effort.
+        }
+      }
     },
-    [conversationId, loadSnapshot],
+    [
+      attachToActiveRun,
+      client,
+      conversationId,
+      currentTurn,
+      loadSnapshot,
+      runStreamedTurn,
+      settleRun,
+    ],
   );
+
+  const stop = useCallback(async () => {
+    controllerRef.current?.abort();
+    dispatch({ type: "stop-requested", conversationId });
+    let runId = currentTurn().runId;
+    if (runId === null) {
+      // Stop before response.started: the create may already have committed, so
+      // resolve the run before canceling instead of sitting on stopping forever.
+      try {
+        runId = await resolveActiveRunId(client, conversationId);
+      } catch {
+        // Unknown outcome; reconcile rather than assume a failure.
+      }
+    }
+    if (runId !== null) {
+      const cancel = new AbortController();
+      const timer = window.setTimeout(() => cancel.abort(), 4000);
+      try {
+        await client.cancelRun(runId, { signal: cancel.signal });
+      } catch {
+        // A terminal run is a successful no-op; timeout falls through to polling.
+      } finally {
+        window.clearTimeout(timer);
+      }
+      await settleRun(runId);
+    } else {
+      // Cancel outcome unknown: reconciling, never a terminal guess.
+      dispatch({ type: "reconcile", conversationId });
+    }
+    try {
+      await loadSnapshot();
+    } catch {
+      // Best-effort.
+    }
+  }, [client, conversationId, currentTurn, loadSnapshot, settleRun]);
+
+  const retry = useCallback(async () => {
+    const runId = currentTurn().runId;
+    if (runId === null) return;
+    dispatch({ type: "restart-turn", conversationId });
+    const result = await runStreamedTurn(
+      { kind: "retry", runId },
+      currentTurn().clientMessageId ?? crypto.randomUUID(),
+      crypto.randomUUID(),
+    );
+    if (result.outcome === "incomplete" && result.runId !== null) {
+      await attachToActiveRun(result.runId, currentTurn().lastSequence);
+    } else if (
+      result.outcome === "rejected" ||
+      result.outcome === "network-unknown"
+    ) {
+      setNotice(
+        result.error instanceof ClientError
+          ? `Retry failed (${result.error.code}).`
+          : retryableNotice,
+      );
+    }
+    try {
+      await loadSnapshot();
+    } catch {
+      // Best-effort.
+    }
+  }, [
+    attachToActiveRun,
+    conversationId,
+    currentTurn,
+    loadSnapshot,
+    runStreamedTurn,
+  ]);
+
+  const regenerate = useCallback(
+    async (userMessageId: string) => {
+      dispatch({ type: "restart-turn", conversationId });
+      const result = await runStreamedTurn(
+        { kind: "regenerate", userMessageId },
+        crypto.randomUUID(),
+        crypto.randomUUID(),
+      );
+      if (result.outcome === "incomplete" && result.runId !== null) {
+        await attachToActiveRun(result.runId, currentTurn().lastSequence);
+      } else if (
+        result.outcome === "rejected" ||
+        result.outcome === "network-unknown"
+      ) {
+        setNotice(
+          result.error instanceof ClientError
+            ? `Regenerate failed (${result.error.code}).`
+            : retryableNotice,
+        );
+      }
+      try {
+        await loadSnapshot();
+      } catch {
+        // Best-effort.
+      }
+    },
+    [
+      attachToActiveRun,
+      conversationId,
+      currentTurn,
+      loadSnapshot,
+      runStreamedTurn,
+    ],
+  );
+
+  const recoverWhenOnline = useCallback(async () => {
+    if (!needsRecoveryRef.current) return;
+    needsRecoveryRef.current = false;
+    try {
+      const latest = await client.getConversation(conversationId);
+      if (latest.active_run) {
+        setNotice("Reconnecting to the running answer…");
+        await attachToActiveRun(
+          latest.active_run.id,
+          currentTurn().lastSequence,
+        );
+      }
+      await loadSnapshot();
+    } catch {
+      needsRecoveryRef.current = true;
+    }
+  }, [attachToActiveRun, client, conversationId, currentTurn, loadSnapshot]);
+
+  useEffect(() => {
+    const onOnline = () => void recoverWhenOnline();
+    window.addEventListener("online", onOnline);
+    return () => window.removeEventListener("online", onOnline);
+  }, [recoverWhenOnline]);
+
+  useEffect(() => {
+    const run = snapshot?.active_run;
+    if (run == null || terminalStatus(run.status)) return;
+    if (followedRunRef.current === run.id) return;
+    followedRunRef.current = run.id;
+    if (supportsStreaming()) {
+      void attachToActiveRun(
+        run.id,
+        currentTurn().lastSequence || run.last_sequence,
+      );
+    } else {
+      void settleRun(run.id);
+    }
+  }, [attachToActiveRun, currentTurn, settleRun, snapshot]);
+
+  const turnForReconcile =
+    state.turnsByConversation[conversationId] ?? emptyTurn();
+  const reconcileKey =
+    turnForReconcile.status === "reconciling" && turnForReconcile.runId !== null
+      ? `${turnForReconcile.runId}:${turnForReconcile.lastSequence}`
+      : null;
+  useEffect(() => {
+    if (reconcileKey === null || seenReconcileRef.current === reconcileKey) {
+      return;
+    }
+    seenReconcileRef.current = reconcileKey;
+    const runId = turnForReconcile.runId;
+    if (runId === null) return;
+    void attachToActiveRun(runId, turnForReconcile.lastSequence);
+  }, [
+    attachToActiveRun,
+    reconcileKey,
+    turnForReconcile.lastSequence,
+    turnForReconcile.runId,
+  ]);
 
   if (error !== null) {
     return (
@@ -198,6 +520,13 @@ export function Transcript({
     turn.assistantContent !== "" &&
     !canonicalHasAssistant &&
     (ACTIVE_STATUSES.has(turn.status) || turn.status === "completed");
+  const lastAssistant = [...visible]
+    .reverse()
+    .find((message) => message.role === "assistant");
+  const regenerateTarget = lastAssistant?.in_reply_to_id ?? null;
+  const displayMessages = showLiveAssistant
+    ? visible.filter((message) => message.id !== lastAssistant?.id)
+    : visible;
 
   const liveMessage = (role: Message["role"], content: string): Message => ({
     id: `live-${role}`,
@@ -234,7 +563,7 @@ export function Transcript({
         <p className="empty-transcript">No messages yet.</p>
       ) : (
         <ol className="transcript-list" role="list">
-          {visible.map((message) => (
+          {displayMessages.map((message) => (
             <MessageBubble key={message.id} message={message} />
           ))}
           {showLiveUser ? (
@@ -251,6 +580,27 @@ export function Transcript({
           ) : null}
         </ol>
       )}
+      <div className="turn-controls">
+        {ACTIVE_STATUSES.has(turn.status) ? (
+          <button type="button" onClick={() => void stop()}>
+            Stop
+          </button>
+        ) : null}
+        {turn.runId !== null &&
+        (turn.status === "failed" || turn.status === "cancelled") ? (
+          <button type="button" onClick={() => void retry()}>
+            Retry
+          </button>
+        ) : null}
+        {turn.status === "completed" && regenerateTarget !== null ? (
+          <button
+            type="button"
+            onClick={() => void regenerate(regenerateTarget)}
+          >
+            Regenerate
+          </button>
+        ) : null}
+      </div>
       <Composer
         busy={ACTIVE_STATUSES.has(turn.status)}
         onSubmit={(content) => submit(content)}
