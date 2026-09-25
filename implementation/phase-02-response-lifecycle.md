@@ -9,10 +9,9 @@
 ## Files
 
 - Modify: Alembic new revision for `response_runs` (including lease columns), `stream_events`, `idempotency_records` if not present
-- Create: `services/api/app/persistence/runs.py`, `events.py`
-- Create: `services/api/app/chat/responses.py`, `state_machine.py`
-- Create: `services/api/app/chat/event_writer.py`
-- Test: `services/api/tests/test_run_state.py`, `test_event_replay.py`, `test_retry_regenerate.py`
+- Create: `services/api/app/chat/responses.py`, `state_machine.py`, `event_writer.py` (data access lives in these modules; no separate `persistence/runs.py` or `events.py` were needed)
+- Create: `services/api/app/api/runs.py` (run status and cancel HTTP)
+- Test: `services/api/tests/test_run_state.py`, `test_event_replay.py`, `test_retry_regenerate.py`, `test_run_http.py`
 
 ### Task 1: Run + event schema
 

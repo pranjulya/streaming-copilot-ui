@@ -5,6 +5,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api import rfc3339
 from app.api.errors import AppError
 from app.chat.state_machine import assert_transition, is_terminal
 from app.persistence.models import (
@@ -16,10 +17,6 @@ from app.persistence.models import (
 )
 
 PROTOCOL_VERSION = "1.0"
-
-
-def _iso(value: datetime) -> str:
-    return value.astimezone(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 @dataclass(frozen=True)
@@ -39,7 +36,7 @@ class StreamEvent:
             "sequence": self.sequence,
             "event_id": str(self.event_id),
             "type": self.type,
-            "occurred_at": _iso(self.occurred_at),
+            "occurred_at": rfc3339(self.occurred_at),
             "conversation_id": str(self.conversation_id),
             "run_id": str(self.run_id),
             "data": self.data,
@@ -221,7 +218,7 @@ async def complete_run(
         run = await _load_run_for_update(session, run_id)
         if is_terminal(run.status):
             if run.status != "completed":
-                assert_transition(run.status, "completed")
+                raise AppError(409, "invalid_run_state", f"Run is already {run.status}")
             stored_message = await _stored_event(session, run_id, "message.completed")
             stored_response = await _stored_event(session, run_id, "response.completed")
             if stored_message is None or stored_response is None:
@@ -261,38 +258,45 @@ async def complete_run(
         return message_event, response_event
 
 
+async def fail_locked_run(
+    session: AsyncSession, run: ResponseRun, failure: SafeFailure
+) -> StreamEvent:
+    """Fail a non-terminal run whose row the caller has already locked."""
+    assert_transition(run.status, "failed")
+    now = datetime.now(UTC)
+    message = await _load_message(session, run.assistant_message_id)
+    message.status = "failed"
+    message.updated_at = now
+    run.status = "failed"
+    run.completed_at = now
+    run.error_code = failure.code
+    run.diagnostic_id = failure.diagnostic_id or str(uuid4())
+    run.updated_at = now
+    conversation = await _load_conversation(session, run.conversation_id)
+    conversation.updated_at = now
+    data: dict[str, object] = {
+        "code": failure.code,
+        "message": failure.message,
+        "retryable": failure.retryable,
+        "diagnostic_id": run.diagnostic_id,
+        "content": message.content,
+    }
+    return await _insert_event(session, run, "response.failed", data)
+
+
 async def fail_run(run_id: UUID, failure: SafeFailure, *, session: AsyncSession) -> StreamEvent:
     async with session.begin():
         run = await _load_run_for_update(session, run_id)
         if is_terminal(run.status):
             if run.status != "failed":
-                assert_transition(run.status, "failed")
+                raise AppError(409, "invalid_run_state", f"Run is already {run.status}")
             stored = await _stored_event(session, run_id, "response.failed")
             if stored is None:
                 raise AppError(
                     409, "invalid_run_state", "Terminal run is missing its committed events"
                 )
             return stored
-        assert_transition(run.status, "failed")
-        now = datetime.now(UTC)
-        message = await _load_message(session, run.assistant_message_id)
-        message.status = "failed"
-        message.updated_at = now
-        run.status = "failed"
-        run.completed_at = now
-        run.error_code = failure.code
-        run.diagnostic_id = failure.diagnostic_id or str(uuid4())
-        run.updated_at = now
-        conversation = await _load_conversation(session, run.conversation_id)
-        conversation.updated_at = now
-        data: dict[str, object] = {
-            "code": failure.code,
-            "message": failure.message,
-            "retryable": failure.retryable,
-            "diagnostic_id": run.diagnostic_id,
-            "content": message.content,
-        }
-        return await _insert_event(session, run, "response.failed", data)
+        return await fail_locked_run(session, run, failure)
 
 
 async def cancel_run(run_id: UUID, *, session: AsyncSession) -> StreamEvent:
@@ -300,7 +304,7 @@ async def cancel_run(run_id: UUID, *, session: AsyncSession) -> StreamEvent:
         run = await _load_run_for_update(session, run_id)
         if is_terminal(run.status):
             if run.status != "cancelled":
-                assert_transition(run.status, "cancelled")
+                raise AppError(409, "invalid_run_state", f"Run is already {run.status}")
             stored = await _stored_event(session, run_id, "response.cancelled")
             if stored is None:
                 raise AppError(
@@ -360,7 +364,7 @@ async def follow_events(
         snapshot = StreamEvent(
             protocol_version=PROTOCOL_VERSION,
             sequence=run.last_sequence,
-            event_id=uuid4(),
+            event_id=uuid7(),
             type="response.snapshot",
             occurred_at=datetime.now(UTC),
             conversation_id=run.conversation_id,

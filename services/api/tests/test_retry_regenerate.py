@@ -220,6 +220,27 @@ def test_second_create_with_new_key_is_conversation_busy() -> None:
     asyncio.run(scenario())
 
 
+def test_duplicate_client_message_id_replays_while_run_is_active() -> None:
+    async def scenario() -> None:
+        user, conversation_id = await seed_plain_conversation(prefix="dup-cmid")
+        client_message_id = uuid.uuid4()
+        first = await create_turn(  # type: ignore[arg-type]
+            user, create_cmd(conversation_id, client_message_id=client_message_id)
+        )
+        replay = await create_turn(  # type: ignore[arg-type]
+            user,
+            create_cmd(
+                conversation_id,
+                client_message_id=client_message_id,
+                key=uuid.uuid4(),
+                request_hash="hash-two",
+            ),
+        )
+        assert replay.id == first.id  # type: ignore[attr-defined]
+
+    asyncio.run(scenario())
+
+
 def test_create_response_enforces_per_user_cap() -> None:
     from app.api.errors import AppError
 
@@ -512,10 +533,10 @@ def test_failed_creation_rolls_back_and_keeps_previous_answer_visible(
         assert len(before) == 1
         assert before[0][2] is True
 
-        async def boom(*args: object, **kwargs: object) -> None:
+        def boom(*args: object, **kwargs: object) -> None:
             raise RuntimeError("insert failed")
 
-        monkeypatch.setattr("app.chat.responses._insert_run", boom)
+        monkeypatch.setattr("app.chat.responses._queued_run", boom)
         with pytest.raises(RuntimeError, match="insert failed"):
             async with session_factory()() as session:
                 await retry_run(

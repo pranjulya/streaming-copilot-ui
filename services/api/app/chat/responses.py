@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.auth import Actor
 from app.api.errors import AppError
-from app.chat.event_writer import SafeFailure, fail_run
+from app.chat.event_writer import SafeFailure, fail_locked_run
 from app.chat.state_machine import InvalidStateTransition, is_terminal
 from app.persistence.models import (
     Conversation,
@@ -140,10 +140,6 @@ def _store_key(
     )
 
 
-async def _insert_run(session: AsyncSession, run: ResponseRun) -> None:
-    session.add(run)
-
-
 def _queued_run(
     *,
     conversation_id: UUID,
@@ -195,16 +191,6 @@ async def create_response(
                 replay = await _keyed_run(session, record, actor.user_id)
                 if replay is not None:
                     return replay
-                active = await _active_run_id(session, cmd.conversation_id)
-                if active is not None:
-                    raise AppError(
-                        409,
-                        "conversation_busy",
-                        "Conversation already has an active response",
-                        conversation_id=str(cmd.conversation_id),
-                        active_run_id=str(active),
-                    )
-                await _assert_capacity(session, actor.user_id, settings)
                 existing_message = await session.scalar(
                     select(Message).where(
                         Message.conversation_id == cmd.conversation_id,
@@ -224,6 +210,16 @@ async def create_response(
                             "Existing turn has no response run",
                         )
                     return existing_run
+                active = await _active_run_id(session, cmd.conversation_id)
+                if active is not None:
+                    raise AppError(
+                        409,
+                        "conversation_busy",
+                        "Conversation already has an active response",
+                        conversation_id=str(cmd.conversation_id),
+                        active_run_id=str(active),
+                    )
+                await _assert_capacity(session, actor.user_id, settings)
                 user_message = Message(
                     conversation_id=cmd.conversation_id,
                     role="user",
@@ -250,7 +246,7 @@ async def create_response(
                     attempt=1,
                     settings=settings,
                 )
-                await _insert_run(session, run)
+                session.add(run)
                 await session.flush()
                 _store_key(
                     session,
@@ -362,7 +358,7 @@ async def retry_run(
                     attempt=source.attempt + 1,
                     settings=settings,
                 )
-                await _insert_run(session, run)
+                session.add(run)
                 await session.flush()
                 if idempotency_key is not None and request_hash is not None:
                     _store_key(
@@ -476,7 +472,7 @@ async def regenerate_message(
                     attempt=attempt,
                     settings=settings,
                 )
-                await _insert_run(session, run)
+                session.add(run)
                 await session.flush()
                 if idempotency_key is not None and request_hash is not None:
                     _store_key(
@@ -517,11 +513,35 @@ def _orphan_condition(settings: Settings, *, include_own_instance: bool) -> Colu
     return or_(*conditions)
 
 
-async def _fail_targets(session: AsyncSession, target_ids: list[UUID]) -> int:
+def _is_orphan_run(
+    run: ResponseRun, settings: Settings, *, include_own_instance: bool
+) -> bool:
+    if run.lease_expires_at is None or run.lease_expires_at <= datetime.now(UTC):
+        return True
+    return include_own_instance and run.owner_instance_id == settings.instance_id
+
+
+async def _fail_targets(
+    session: AsyncSession,
+    target_ids: list[UUID],
+    settings: Settings,
+    *,
+    include_own_instance: bool,
+) -> int:
     reaped = 0
     for run_id in target_ids:
         try:
-            await fail_run(run_id, _restart_failure(), session=session)
+            async with session.begin():
+                run = await session.scalar(
+                    select(ResponseRun).where(ResponseRun.id == run_id).with_for_update()
+                )
+                if run is None or run.status not in ACTIVE_RUN_STATUSES:
+                    continue
+                if not _is_orphan_run(
+                    run, settings, include_own_instance=include_own_instance
+                ):
+                    continue
+                await fail_locked_run(session, run, _restart_failure())
             reaped += 1
         except InvalidStateTransition:
             continue
@@ -540,7 +560,9 @@ async def reap_orphaned_runs(*, session: AsyncSession, settings: Settings) -> in
                 )
             ).all()
         )
-    return await _fail_targets(session, target_ids)
+    return await _fail_targets(
+        session, target_ids, settings, include_own_instance=True
+    )
 
 
 async def reap_expired_leases(*, session: AsyncSession, settings: Settings) -> int:
@@ -555,7 +577,9 @@ async def reap_expired_leases(*, session: AsyncSession, settings: Settings) -> i
                 )
             ).all()
         )
-    return await _fail_targets(session, target_ids)
+    return await _fail_targets(
+        session, target_ids, settings, include_own_instance=False
+    )
 
 
 @dataclass(frozen=True)

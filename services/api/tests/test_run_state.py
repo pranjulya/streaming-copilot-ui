@@ -303,6 +303,35 @@ def test_start_run_is_sequence_one_and_deltas_follow_without_gaps() -> None:
     asyncio.run(scenario())
 
 
+def test_content_index_counts_code_points_for_supplementary_characters() -> None:
+    from sqlalchemy import text as sql_text
+
+    from app.chat.event_writer import append_delta, start_run
+
+    async def scenario() -> None:
+        _, run_id, _, assistant_message_id = await seed_run_and_messages()
+        factory = writer_session_factory()
+        async with factory() as session:
+            await start_run(run_id, session=session)
+        async with factory() as session:
+            thumbs = await append_delta(run_id, "👍", session=session)
+        async with factory() as session:
+            rest = await append_delta(run_id, "ok", session=session)
+        assert thumbs.data["content_index"] == 0
+        assert rest.data["content_index"] == 1
+        async with factory() as session:
+            content = (
+                await session.execute(
+                    sql_text("SELECT content FROM messages WHERE id = :id"),
+                    {"id": assistant_message_id},
+                )
+            ).scalar_one()
+        assert content == "👍ok"
+        assert len(content) == 3
+
+    asyncio.run(scenario())
+
+
 def test_start_run_is_idempotent_when_already_streaming() -> None:
     from sqlalchemy import text as sql_text
 
@@ -486,7 +515,7 @@ def test_complete_run_is_idempotent_and_content_matches_message() -> None:
             message_event, response_event = await complete_run(run_id, result, session=session)
         assert message_event.type == "message.completed"
         assert response_event.type == "response.completed"
-        assert message_event.sequence == message_event.sequence
+        assert message_event.sequence + 1 == response_event.sequence
         assert message_event.data["content"] == "Hello world"
         assert response_event.data["finish_reason"] == "stop"
         assert response_event.data["usage"] == {"input_tokens": 7, "output_tokens": 4}
@@ -673,6 +702,64 @@ def reap_settings():
     from app.settings import Settings
 
     return Settings(_env_file=None, database_url=database_url())
+
+
+def test_reaper_rechecks_the_lease_under_the_lock() -> None:
+    from datetime import timedelta
+
+    from sqlalchemy import text as sql_text
+
+    from app.chat.responses import _fail_targets
+    from app.settings import Settings
+
+    async def scenario() -> None:
+        _, run_id, *_ = await seed_run_and_messages()
+        factory = writer_session_factory()
+        async with factory() as session:
+            async with session.begin():
+                await session.execute(
+                    sql_text(
+                        "UPDATE response_runs SET owner_instance_id = :owner,"
+                        " lease_expires_at = :lease WHERE id = :id"
+                    ),
+                    {
+                        "owner": uuid.uuid4(),
+                        "lease": datetime.now(UTC) + timedelta(seconds=60),
+                        "id": run_id,
+                    },
+                )
+        async with factory() as session:
+            reaped = await _fail_targets(
+                session, [run_id], Settings(_env_file=None), include_own_instance=False
+            )
+        assert reaped == 0
+        async with factory() as session:
+            status = (
+                await session.execute(
+                    sql_text("SELECT status FROM response_runs WHERE id = :id"),
+                    {"id": run_id},
+                )
+            ).scalar_one()
+        assert status == "queued"
+
+    asyncio.run(scenario())
+
+
+def test_completing_a_terminal_run_in_another_state_is_invalid_run_state() -> None:
+    from app.api.errors import AppError
+    from app.chat.event_writer import CompletionResult, complete_run
+
+    async def scenario() -> None:
+        _, run_id, *_ = await seed_run_and_messages(status="failed")
+        factory = writer_session_factory()
+        result = CompletionResult(content="late", finish_reason="stop")
+        with pytest.raises(AppError) as caught:
+            async with factory() as session:
+                await complete_run(run_id, result, session=session)
+        assert caught.value.status_code == 409
+        assert caught.value.code == "invalid_run_state"
+
+    asyncio.run(scenario())
 
 
 def test_startup_reaper_fails_null_expired_and_own_instance_runs() -> None:
