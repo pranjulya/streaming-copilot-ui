@@ -116,6 +116,23 @@ type ProblemBody = {
   diagnostic_id?: string;
 };
 
+export async function problemFromResponse(
+  response: Response,
+): Promise<ClientError> {
+  let problem: ProblemBody = {};
+  try {
+    problem = (await response.json()) as ProblemBody;
+  } catch {
+    problem = {};
+  }
+  return new ClientError(
+    response.status,
+    problem.code ?? "internal_error",
+    problem.title ?? "Request failed",
+    problem.diagnostic_id ?? null,
+  );
+}
+
 type RequestOptions = {
   method?: "GET" | "POST" | "PATCH";
   body?: unknown;
@@ -164,18 +181,7 @@ export class ConversationClient {
       );
     });
     if (!response.ok) {
-      let problem: ProblemBody = {};
-      try {
-        problem = (await response.json()) as ProblemBody;
-      } catch {
-        problem = {};
-      }
-      throw new ClientError(
-        response.status,
-        problem.code ?? "internal_error",
-        problem.title ?? "Request failed",
-        problem.diagnostic_id ?? null,
-      );
+      throw await problemFromResponse(response);
     }
     return (await response.json()) as T;
   }
@@ -242,6 +248,12 @@ export class ConversationClient {
 }
 
 export function newIdempotencyKey(): string {
+  return crypto.randomUUID();
+}
+
+// The optimistic bubble and the canonical row must agree on this id, so the
+// component mints it here rather than reaching for crypto directly.
+export function newClientMessageId(): string {
   return crypto.randomUUID();
 }
 

@@ -64,6 +64,10 @@ jobs:
           pnpm --dir apps/web build
       - name: Verify actual development proxy with healthy database
         run: uv run --project services/api python scripts/smoke.py --require-db
+      - name: Install Playwright browsers
+        run: pnpm --dir apps/web exec playwright install --with-deps chromium
+      - name: Playwright smoke
+        run: pnpm --dir apps/web exec playwright test
       - name: Stop local database
         if: always()
         run: docker compose down

@@ -56,6 +56,13 @@ describe("Composer", () => {
     expect((input as HTMLTextAreaElement).value).toBe("");
   });
 
+  test("submit button is disabled while busy", () => {
+    render(<Composer onSubmit={() => {}} busy />);
+    expect(
+      screen.getByRole("button", { name: "Send" }).hasAttribute("disabled"),
+    ).toBe(true);
+  });
+
   test("submit button is disabled while the composer is empty", async () => {
     render(<Composer onSubmit={() => {}} />);
     const button = screen.getByRole("button", { name: "Send" });

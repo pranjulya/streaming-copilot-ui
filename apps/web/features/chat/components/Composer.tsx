@@ -6,17 +6,26 @@ const EMPTY_HINT_ID = "composer-empty-hint";
 
 export function Composer({
   onSubmit,
+  busy = false,
 }: {
-  onSubmit: (content: string) => void;
+  onSubmit: (content: string) => void | Promise<void>;
+  busy?: boolean;
 }) {
   const [value, setValue] = useState("");
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const canSubmit = value.trim().length > 0;
+  const canSubmit = value.trim().length > 0 && !busy;
 
-  function submit() {
+  async function submit() {
     if (!canSubmit) return;
-    onSubmit(value.trim());
+    const text = value.trim();
     setValue("");
+    try {
+      await onSubmit(text);
+    } catch {
+      setValue(text);
+      inputRef.current?.focus();
+      return;
+    }
     inputRef.current?.focus();
   }
 
@@ -26,7 +35,7 @@ export function Composer({
       aria-label="Message composer"
       onSubmit={(event) => {
         event.preventDefault();
-        submit();
+        void submit();
       }}
     >
       <label className="composer-label" htmlFor="composer-input">
@@ -58,7 +67,7 @@ export function Composer({
         Send
       </button>
       <span id={EMPTY_HINT_ID} className="composer-hint">
-        Message is empty
+        {busy ? "A response is already in progress" : "Message is empty"}
       </span>
     </form>
   );

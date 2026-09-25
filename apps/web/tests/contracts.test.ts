@@ -4,6 +4,8 @@ import Ajv2020 from "ajv/dist/2020";
 import addFormats from "ajv-formats";
 import { expect, test } from "vitest";
 
+import { parseNdjson } from "../features/chat/stream/parseNdjson";
+
 const root = fileURLToPath(new URL("../../../contracts/", import.meta.url));
 const types = [
   "response.started",
@@ -17,7 +19,7 @@ const types = [
   "response.snapshot",
 ];
 
-test("the web toolchain accepts every frozen V1 fixture", () => {
+test("the web toolchain accepts every frozen V1 fixture", async () => {
   const ajv = new Ajv2020({ allErrors: true });
   addFormats(ajv);
   const validate = ajv.compile(
@@ -37,6 +39,23 @@ test("the web toolchain accepts every frozen V1 fixture", () => {
     if (["heartbeat", "response.snapshot"].includes(event.type)) {
       expect(event.sequence).toBe(event.data.last_sequence);
     }
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(
+          new TextEncoder().encode(`${JSON.stringify(event)}\n`),
+        );
+        controller.close();
+      },
+    });
+    const parsed = [];
+    for await (const result of parseNdjson(
+      stream,
+      new AbortController().signal,
+    )) {
+      parsed.push(result);
+    }
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0]).toMatchObject({ kind: "event", event });
   }
   const delta = events.find((event) => event.type === "message.delta");
   expect(delta.data.delta).toContain("👍");
