@@ -655,6 +655,48 @@ def test_supervisor_maps_persistence_errors_to_persistence_failed() -> None:
     asyncio.run(scenario())
 
 
+def test_supervisor_cancels_when_a_pending_cancel_rejects_the_append() -> None:
+    from sqlalchemy import text
+
+    from app.api.errors import AppError
+    from app.providers.fake import FakeProvider
+
+    async def scenario() -> None:
+        settings = supervisor_settings(delta_flush_chars=1)
+        run_id, _, _ = await seed_supervised_run(
+            new_user("sup-cancel-append"), instance_id=settings.instance_id
+        )
+        supervisor = make_supervisor(FakeProvider(deltas=["x"] * 100), settings)
+        factory = session_factory()
+
+        # A user cancel can land between the loop's cancel poll and the flush
+        # that follows it; the writer then rejects the append with 409.
+        async def cancel_then_reject(*args: object, **kwargs: object) -> None:
+            async with factory() as session:
+                async with session.begin():
+                    await session.execute(
+                        text("UPDATE response_runs SET cancel_requested_at = now() WHERE id = :id"),
+                        {"id": run_id},
+                    )
+            raise AppError(
+                409,
+                "invalid_run_state",
+                "Cannot append content to a run that has a pending cancel",
+            )
+
+        supervisor._flush = cancel_then_reject  # type: ignore[method-assign]
+        try:
+            await supervisor.start(run_id)
+            assert await wait_terminal(run_id) == "cancelled"
+        finally:
+            await supervisor.shutdown(0.05)
+        status, _ = await run_state(run_id)
+        assert status == "cancelled"
+        assert (await event_types(run_id))[-1] == "response.cancelled"
+
+    asyncio.run(scenario())
+
+
 def test_supervisor_start_fails_queued_run_when_shutting_down() -> None:
     from app.providers.fake import FakeProvider
 

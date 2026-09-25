@@ -91,6 +91,18 @@ async def _ensure_generation(request: Request, run: ResponseRun) -> None:
         logger.warning("run %s was not started: %s", run.id, exc)
 
 
+def _ndjson_follow(request: Request, run_id: UUID, after_sequence: int) -> StreamingResponse:
+    settings: Settings = request.app.state.settings
+    return _ndjson_response(
+        _follow(request.app.state.session_factory, run_id, after_sequence, settings)
+    )
+
+
+async def _start_and_follow(request: Request, run: ResponseRun) -> StreamingResponse:
+    await _ensure_generation(request, run)
+    return _ndjson_follow(request, run.id, 0)
+
+
 def _client_message_id(body: dict[str, object]) -> UUID:
     raw = body.get("client_message_id")
     if not isinstance(raw, str):
@@ -132,8 +144,7 @@ async def create_response_and_stream(
     )
     async with request.app.state.session_factory() as session:
         run = await create_response(cmd, actor, session=session, settings=settings)
-    await _ensure_generation(request, run)
-    return _ndjson_response(_follow(request.app.state.session_factory, run.id, 0, settings))
+    return await _start_and_follow(request, run)
 
 
 @router.post("/response-runs/{run_id}/stream")
@@ -145,10 +156,7 @@ async def stream_response_run(
     _, body = await read_json_body(request, {"after_sequence"})
     async with request.app.state.session_factory() as session:
         await get_run(run_id, actor, session=session)
-    settings: Settings = request.app.state.settings
-    return _ndjson_response(
-        _follow(request.app.state.session_factory, run_id, _after_sequence(body), settings)
-    )
+    return _ndjson_follow(request, run_id, _after_sequence(body))
 
 
 @router.post("/response-runs/{run_id}/retry")
@@ -168,8 +176,7 @@ async def retry_response_run(
             idempotency_key=require_idempotency_key(request),
             request_hash=fingerprint(raw_body, "POST", request.url.path),
         )
-    await _ensure_generation(request, run)
-    return _ndjson_response(_follow(request.app.state.session_factory, run.id, 0, settings))
+    return await _start_and_follow(request, run)
 
 
 @router.post("/messages/{user_message_id}/regenerations")
@@ -189,5 +196,4 @@ async def regenerate_message_and_stream(
             idempotency_key=require_idempotency_key(request),
             request_hash=fingerprint(raw_body, "POST", request.url.path),
         )
-    await _ensure_generation(request, run)
-    return _ndjson_response(_follow(request.app.state.session_factory, run.id, 0, settings))
+    return await _start_and_follow(request, run)

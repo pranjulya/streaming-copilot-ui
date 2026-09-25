@@ -144,14 +144,34 @@ class GenerationSupervisor:
             raise
         except ProviderStreamError as exc:
             await self._safe_fail(run_id, exc.error.code)
-        except (AppError, SQLAlchemyError):
+        except (AppError, SQLAlchemyError) as exc:
             logger.exception("run %s persistence failed", run_id)
-            await self._safe_fail(run_id, "persistence_failed")
+            if isinstance(exc, AppError) and exc.code == "invalid_run_state":
+                await self._cancel_after_rejected_append(run_id)
+            else:
+                await self._safe_fail(run_id, "persistence_failed")
         except Exception:
             logger.exception("run %s failed unexpectedly", run_id)
             await self._safe_fail(run_id, "persistence_failed")
         finally:
             self._tasks.pop(run_id, None)
+
+    async def _cancel_after_rejected_append(self, run_id: UUID) -> None:
+        """Finish as cancelled when the append a pending cancel rejected was the last write.
+
+        A user cancel can land between the generation loop's cancel poll and the
+        flush or usage write that follows it, so the writer rejects the write
+        with `invalid_run_state`. That is a cancel, not a persistence fault.
+        """
+        try:
+            if not await self._cancel_requested(run_id):
+                await self._safe_fail(run_id, "persistence_failed")
+                return
+            async with self._session_factory() as session:
+                await cancel_run(run_id, session=session)
+        except Exception:
+            logger.exception("run %s could not be cancelled", run_id)
+            await self._safe_fail(run_id, "persistence_failed")
 
     async def _generate(
         self, run_id: UUID, messages: list[ProviderMessage], signal: CancelSignal

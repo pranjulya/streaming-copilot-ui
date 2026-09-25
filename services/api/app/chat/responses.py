@@ -506,9 +506,7 @@ def _orphan_condition(settings: Settings, *, include_own_instance: bool) -> Colu
     return or_(*conditions)
 
 
-def _is_orphan_run(
-    run: ResponseRun, settings: Settings, *, include_own_instance: bool
-) -> bool:
+def _is_orphan_run(run: ResponseRun, settings: Settings, *, include_own_instance: bool) -> bool:
     if run.lease_expires_at is None or run.lease_expires_at <= datetime.now(UTC):
         return True
     return include_own_instance and run.owner_instance_id == settings.instance_id
@@ -530,9 +528,7 @@ async def _fail_targets(
                 )
                 if run is None or run.status not in ACTIVE_RUN_STATUSES:
                     continue
-                if not _is_orphan_run(
-                    run, settings, include_own_instance=include_own_instance
-                ):
+                if not _is_orphan_run(run, settings, include_own_instance=include_own_instance):
                     continue
                 await fail_locked_run(session, run, safe_failure("server_restart"))
             reaped += 1
@@ -553,9 +549,7 @@ async def reap_orphaned_runs(*, session: AsyncSession, settings: Settings) -> in
                 )
             ).all()
         )
-    return await _fail_targets(
-        session, target_ids, settings, include_own_instance=True
-    )
+    return await _fail_targets(session, target_ids, settings, include_own_instance=True)
 
 
 async def reap_expired_leases(*, session: AsyncSession, settings: Settings) -> int:
@@ -570,9 +564,7 @@ async def reap_expired_leases(*, session: AsyncSession, settings: Settings) -> i
                 )
             ).all()
         )
-    return await _fail_targets(
-        session, target_ids, settings, include_own_instance=False
-    )
+    return await _fail_targets(session, target_ids, settings, include_own_instance=False)
 
 
 @dataclass(frozen=True)

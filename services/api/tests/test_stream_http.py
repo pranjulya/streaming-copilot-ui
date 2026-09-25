@@ -69,12 +69,8 @@ def test_stream_emits_heartbeats_without_persisting_them() -> None:
 
     async def scenario() -> None:
         user = new_user("heartbeat")
-        provider = FakeProvider(
-            deltas=["Back"], finish_reason="stop", delay_seconds=1.1
-        )
-        with api_client(
-            user, provider, heartbeat_interval_seconds=1, delta_flush_ms=1
-        ) as client:
+        provider = FakeProvider(deltas=["Back"], finish_reason="stop", delay_seconds=1.1)
+        with api_client(user, provider, heartbeat_interval_seconds=1, delta_flush_ms=1) as client:
             conversation_id = create_conversation(client)
             body = {"client_message_id": str(uuid.uuid4()), "content": "Explain backpressure"}
             with client.stream(

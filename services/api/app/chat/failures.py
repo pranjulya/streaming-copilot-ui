@@ -20,12 +20,8 @@ class FailureSpec:
 DEFAULT_FAILURE = FailureSpec(message="The assistant could not finish this response.")
 
 FAILURES: dict[str, FailureSpec] = {
-    "server_restart": FailureSpec(
-        message="The assistant stopped responding. Retrying is safe."
-    ),
-    "provider_unavailable": FailureSpec(
-        message="The assistant is temporarily unavailable."
-    ),
+    "server_restart": FailureSpec(message="The assistant stopped responding. Retrying is safe."),
+    "provider_unavailable": FailureSpec(message="The assistant is temporarily unavailable."),
     "provider_rate_limited": FailureSpec(
         message="The assistant is rate limited right now. Retrying is safe."
     ),
@@ -38,9 +34,7 @@ FAILURES: dict[str, FailureSpec] = {
     "output_limit_exceeded": FailureSpec(
         message="The answer reached the length limit.", retryable=False
     ),
-    "persistence_failed": FailureSpec(
-        message="The response could not be saved. Retrying is safe."
-    ),
+    "persistence_failed": FailureSpec(message="The response could not be saved. Retrying is safe."),
     "cancelled_cleanup_failed": FailureSpec(
         message="The cancellation did not finish cleanly. Retrying is safe."
     ),
