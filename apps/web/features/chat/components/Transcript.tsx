@@ -2,12 +2,14 @@
 
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 
-import type {
-  ConversationSnapshot,
-  ConversationClient,
-  Message,
+import {
+  ClientError,
+  newClientMessageId,
+  newIdempotencyKey,
+  type ConversationSnapshot,
+  type ConversationClient,
+  type Message,
 } from "../api/client";
-import { ClientError } from "../api/client";
 import { startResponse } from "../api/stream";
 import { chatReducer, emptyTurn, initialChatState } from "../state/chatReducer";
 import { Composer } from "./Composer";
@@ -105,8 +107,8 @@ export function Transcript({
 
   const submit = useCallback(
     async (content: string) => {
-      const clientMessageId = crypto.randomUUID();
-      const idempotencyKey = crypto.randomUUID();
+      const clientMessageId = newClientMessageId();
+      const idempotencyKey = newIdempotencyKey();
       dispatch({
         type: "optimistic",
         conversationId,

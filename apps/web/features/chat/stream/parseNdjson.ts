@@ -90,14 +90,15 @@ function parseLine(line: string): ParseResult {
     };
   }
   if (
-    typeof envelope.sequence !== "number" ||
+    !Number.isInteger(envelope.sequence) ||
     typeof envelope.event_id !== "string" ||
     typeof envelope.type !== "string" ||
     typeof envelope.occurred_at !== "string" ||
     typeof envelope.conversation_id !== "string" ||
     typeof envelope.run_id !== "string" ||
     typeof envelope.data !== "object" ||
-    envelope.data === null
+    envelope.data === null ||
+    Array.isArray(envelope.data)
   ) {
     return { kind: "invalid", reason: "envelope is missing required fields" };
   }

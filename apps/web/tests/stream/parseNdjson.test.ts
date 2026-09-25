@@ -113,6 +113,17 @@ describe("parseNdjson", () => {
     ]);
   });
 
+  test("rejects a non-integer sequence and an array data payload", async () => {
+    const results = await collect([
+      encoder.encode(`${JSON.stringify(envelope({ sequence: 1.5 }))}\n`),
+      encoder.encode(`${JSON.stringify(envelope({ data: [] }))}\n`),
+    ]);
+    expect(results.map((result) => result.kind)).toEqual([
+      "invalid",
+      "invalid",
+    ]);
+  });
+
   test("yields protocol for an unsupported major version", async () => {
     const results = await collect([
       encoder.encode(

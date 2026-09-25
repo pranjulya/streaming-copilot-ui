@@ -1,4 +1,4 @@
-import { ClientError } from "./client";
+import { ClientError, problemFromResponse } from "./client";
 import { parseNdjson, type ParseResult } from "../stream/parseNdjson";
 
 export type StartResponseOptions = {
@@ -12,10 +12,6 @@ export type StartResponseOptions = {
   onResult: (result: ParseResult) => void;
 };
 
-function requestIdempotencyKey(): string {
-  return crypto.randomUUID();
-}
-
 export async function startResponse(
   options: StartResponseOptions,
 ): Promise<void> {
@@ -27,7 +23,7 @@ export async function startResponse(
       headers: {
         Accept: "application/x-ndjson",
         "Content-Type": "application/json",
-        "Idempotency-Key": options.idempotencyKey ?? requestIdempotencyKey(),
+        "Idempotency-Key": options.idempotencyKey,
       },
       body: JSON.stringify({
         client_message_id: options.clientMessageId,
@@ -37,22 +33,7 @@ export async function startResponse(
     },
   );
   if (!response.ok) {
-    let code = "internal_error";
-    let diagnosticId: string | null = null;
-    let title = "Request failed";
-    try {
-      const problem = (await response.json()) as {
-        code?: string;
-        diagnostic_id?: string;
-        title?: string;
-      };
-      code = problem.code ?? code;
-      diagnosticId = problem.diagnostic_id ?? null;
-      title = problem.title ?? title;
-    } catch {
-      // Non-JSON error body.
-    }
-    throw new ClientError(response.status, code, title, diagnosticId);
+    throw await problemFromResponse(response);
   }
   if (response.body === null) {
     throw new ClientError(

@@ -9,7 +9,7 @@
 ## Files
 
 - Create: `apps/web/features/chat/stream/parseNdjson.ts`
-- Create: `apps/web/features/chat/state/chatReducer.ts`, `types.ts`
+- Create: `apps/web/features/chat/state/chatReducer.ts` (the plan's `types.ts` is folded into this module; `StreamEvent` stays in `parseNdjson.ts`)
 - Create: `apps/web/features/chat/api/stream.ts`
 - Test: `apps/web/tests/stream/parseNdjson.test.ts`, `apps/web/tests/state/chatReducer.test.ts`
 - E2E: `apps/web/tests/e2e/stream-complete.spec.ts`
@@ -32,11 +32,13 @@ function chatReducer(state: ChatState, action: ChatAction): ChatState
 
 - [x] Optimistic turn then `response.started` maps IDs.
 - [x] Duplicate sequence ignored; gap does not append (sets reconciling).
+- [x] Events from another `run_id` are ignored, and a duplicate `response.started` does not
+  rewind the cursor (state-machine §4).
 - [x] `content_index` mismatch → reconciling.
 - [x] `message.completed` replaces accumulation.
-- [x] Unknown type: no state change.
+- [x] Unknown persisted type: payload ignored but the cursor advances (contracts §4); heartbeat
+  changes nothing.
 - [x] `response.snapshot` replaces content and `lastSequence`.
-- [x] Heartbeat ignored.
 - [x] Navigation does not clear another conversation’s run state.
 - [x] Commit `feat: add deterministic chat reducer`.
 

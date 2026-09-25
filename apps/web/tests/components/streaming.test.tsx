@@ -16,8 +16,12 @@ afterEach(() => {
 });
 
 const CONVERSATION_ID = "0195f4da-0000-7000-8000-000000000001";
+const DEFAULT_CLIENT_MESSAGE_ID = "0195f4d8-4ee0-7a35-8bc4-63cb5966b448";
 
-function snapshotWith(assistantText: string | null): ConversationSnapshot {
+function snapshotWith(
+  assistantText: string | null,
+  clientMessageId = DEFAULT_CLIENT_MESSAGE_ID,
+): ConversationSnapshot {
   const messages: Message[] = [
     {
       id: "0195f4db-0000-7000-8000-000000000001",
@@ -25,7 +29,7 @@ function snapshotWith(assistantText: string | null): ConversationSnapshot {
       role: "user",
       content: "Explain backpressure",
       status: "complete",
-      client_message_id: "0195f4d8-4ee0-7a35-8bc4-63cb5966b448",
+      client_message_id: clientMessageId,
       in_reply_to_id: null,
       version: 1,
       is_visible: true,
@@ -97,39 +101,53 @@ function streamingBody(
 describe("Transcript streaming", () => {
   test("streams split chunks into the live bubble then shows canonical text", async () => {
     let call = 0;
+    let echoedClientMessageId = "";
     const client = {
       getConversation: vi.fn().mockImplementation(() => {
         call += 1;
         return Promise.resolve(
-          snapshotWith(call > 1 ? "Backpressure is flow control." : null),
+          snapshotWith(
+            call > 1 ? "Backpressure is flow control." : null,
+            echoedClientMessageId || undefined,
+          ),
         );
       }),
     } as unknown as ConversationClient;
 
-    const fetchImpl = vi.fn().mockResolvedValue(
-      new Response(
-        streamingBody([
-          envelope(1, "response.started", {
-            user_message_id: "u1",
-            assistant_message_id: "a1",
-            client_message_id: "client-1",
-            attempt: 1,
-          }),
-          envelope(2, "message.delta", { delta: "Back", content_index: 0 }),
-          envelope(3, "message.delta", { delta: "pressure", content_index: 4 }),
-          envelope(4, "message.completed", {
-            message_id: "a1",
-            content: "Backpressure",
-            finish_reason: "stop",
-          }),
-          envelope(5, "response.completed", { finish_reason: "stop" }),
-        ]),
-        { status: 200, headers: { "content-type": "application/x-ndjson" } },
-      ),
-    );
+    const fetchImpl = vi
+      .fn()
+      .mockImplementation(async (_url: string, init: RequestInit) => {
+        echoedClientMessageId = (
+          JSON.parse(String(init.body)) as { client_message_id: string }
+        ).client_message_id;
+        return new Response(
+          streamingBody([
+            envelope(1, "response.started", {
+              user_message_id: "u1",
+              assistant_message_id: "a1",
+              client_message_id: echoedClientMessageId,
+              attempt: 1,
+            }),
+            envelope(2, "message.delta", { delta: "Back", content_index: 0 }),
+            envelope(3, "message.delta", {
+              delta: "pressure",
+              content_index: 4,
+            }),
+            envelope(4, "message.completed", {
+              message_id: "a1",
+              content: "Backpressure",
+              finish_reason: "stop",
+            }),
+            envelope(5, "response.completed", { finish_reason: "stop" }),
+          ]),
+          { status: 200, headers: { "content-type": "application/x-ndjson" } },
+        );
+      });
     vi.stubGlobal("fetch", fetchImpl);
 
-    render(<Transcript client={client} conversationId={CONVERSATION_ID} />);
+    const { container } = render(
+      <Transcript client={client} conversationId={CONVERSATION_ID} />,
+    );
     await screen.findByRole("heading", { name: "Explain backpressure" });
     await userEvent.type(
       screen.getByLabelText("Message"),
@@ -155,6 +173,9 @@ describe("Transcript streaming", () => {
     };
     expect(body.client_message_id).toMatch(/[0-9a-f-]{36}/);
     expect(body.content).toBe("Explain backpressure");
+    // The refetched canonical user row echoes the posted client_message_id, so
+    // the optimistic bubble reconciles instead of duplicating.
+    expect(container.querySelectorAll(".message-bubble--user")).toHaveLength(1);
   });
 
   test("keeps the live assistant until canonical history has that message", async () => {

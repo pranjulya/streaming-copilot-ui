@@ -338,7 +338,7 @@ describe("chatReducer", () => {
     expect(turn.status).toBe("streaming");
   });
 
-  test("unknown event types and heartbeats do not change state", () => {
+  test("heartbeats do not change state and unknown persisted types advance the cursor", () => {
     const before = reduce([
       {
         type: "optimistic",
@@ -348,13 +348,8 @@ describe("chatReducer", () => {
       },
       { type: "event", conversationId: CONVERSATION, event: started() },
     ]);
-    const after = reduce(
+    const afterHeartbeat = reduce(
       [
-        {
-          type: "event",
-          conversationId: CONVERSATION,
-          event: event({ sequence: 2, type: "tool.started" }),
-        },
         {
           type: "event",
           conversationId: CONVERSATION,
@@ -367,7 +362,137 @@ describe("chatReducer", () => {
       ],
       before,
     );
-    expect(after).toEqual(before);
+    expect(afterHeartbeat).toEqual(before);
+
+    const afterUnknown = reduce(
+      [
+        {
+          type: "event",
+          conversationId: CONVERSATION,
+          event: event({ sequence: 2, type: "tool.started" }),
+        },
+      ],
+      before,
+    );
+    const turn = afterUnknown.turnsByConversation[CONVERSATION];
+    expect(turn.lastSequence).toBe(2);
+    expect(turn.status).toBe("streaming");
+    expect(turn.assistantContent).toBe("");
+  });
+
+  test("ignores events from a different run", () => {
+    const state = reduce([
+      {
+        type: "optimistic",
+        conversationId: CONVERSATION,
+        clientMessageId: "client-1",
+        content: "q",
+      },
+      { type: "event", conversationId: CONVERSATION, event: started() },
+      {
+        type: "event",
+        conversationId: CONVERSATION,
+        event: event({
+          sequence: 2,
+          run_id: "0195f4da-0000-7000-8000-0000000000ff",
+          type: "message.delta",
+          data: { delta: "leak", content_index: 0 },
+        }),
+      },
+    ]);
+    const turn = state.turnsByConversation[CONVERSATION];
+    expect(turn.assistantContent).toBe("");
+    expect(turn.lastSequence).toBe(1);
+  });
+
+  test("a duplicate response.started does not rewind the cursor", () => {
+    const state = reduce([
+      {
+        type: "optimistic",
+        conversationId: CONVERSATION,
+        clientMessageId: "client-1",
+        content: "q",
+      },
+      { type: "event", conversationId: CONVERSATION, event: started() },
+      {
+        type: "event",
+        conversationId: CONVERSATION,
+        event: delta(2, "Back", 0),
+      },
+      {
+        type: "event",
+        conversationId: CONVERSATION,
+        event: delta(3, "pressure", 4),
+      },
+      { type: "event", conversationId: CONVERSATION, event: started() },
+    ]);
+    const turn = state.turnsByConversation[CONVERSATION];
+    expect(turn.assistantContent).toBe("Backpressure");
+    expect(turn.lastSequence).toBe(3);
+    expect(turn.status).toBe("streaming");
+  });
+
+  test('no id is coerced to the string "null"', () => {
+    const withNullCompleted = reduce([
+      {
+        type: "optimistic",
+        conversationId: CONVERSATION,
+        clientMessageId: "client-1",
+        content: "q",
+      },
+      {
+        type: "event",
+        conversationId: CONVERSATION,
+        event: event({
+          sequence: 1,
+          type: "response.started",
+          data: { attempt: 1 },
+        }),
+      },
+      {
+        type: "event",
+        conversationId: CONVERSATION,
+        event: event({
+          sequence: 2,
+          type: "message.completed",
+          data: { message_id: null, content: "done", finish_reason: "stop" },
+        }),
+      },
+    ]);
+    expect(
+      withNullCompleted.turnsByConversation[CONVERSATION].assistantMessageId,
+    ).toBeNull();
+    expect(
+      withNullCompleted.turnsByConversation[CONVERSATION].assistantContent,
+    ).toBe("done");
+
+    const withNullDiagnostic = reduce([
+      {
+        type: "optimistic",
+        conversationId: CONVERSATION,
+        clientMessageId: "client-1",
+        content: "q",
+      },
+      { type: "event", conversationId: CONVERSATION, event: started() },
+      {
+        type: "event",
+        conversationId: CONVERSATION,
+        event: event({
+          sequence: 2,
+          type: "response.failed",
+          data: {
+            code: "provider_unavailable",
+            message: "down",
+            retryable: true,
+            diagnostic_id: null,
+            content: "",
+          },
+        }),
+      },
+    ]);
+    const failed = withNullDiagnostic.turnsByConversation[CONVERSATION];
+    expect(failed.diagnosticId).toBeNull();
+    expect(failed.errorCode).toBe("provider_unavailable");
   });
 
   test("cancelled and failed turns keep partial content", () => {
