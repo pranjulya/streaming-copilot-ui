@@ -1,11 +1,13 @@
 import asyncio
 import json
 import logging
-from collections.abc import AsyncIterator
+import re
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
 
+from app.api.body_limit import RequestBodyLimitMiddleware
 from app.api.conversations import router as conversations_router
 from app.api.dev import router as dev_router
 from app.api.errors import install_error_handlers
@@ -19,6 +21,9 @@ from app.providers.protocol import LlmProvider
 from app.settings import Settings
 
 logger = logging.getLogger(__name__)
+
+# Client-supplied correlation IDs must be short and log-safe; anything else is replaced.
+_REQUEST_ID_PATTERN = re.compile(r"\A[A-Za-z0-9._:-]{1,128}\Z")
 
 
 def _build_provider(config: Settings) -> LlmProvider:
@@ -51,6 +56,26 @@ async def _periodic_lease_reaper(app: FastAPI, config: Settings) -> None:
             logger.exception("periodic lease reaper tick failed")
 
 
+def install_cors(app: FastAPI, config: Settings) -> None:
+    from fastapi.middleware.cors import CORSMiddleware
+
+    origins = [item.strip() for item in config.allowed_origins.split(",") if item.strip()]
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=origins,
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "PATCH", "OPTIONS"],
+        allow_headers=[
+            "Authorization",
+            "Content-Type",
+            "Idempotency-Key",
+            "X-CSRF-Token",
+            "X-Dev-User",
+        ],
+        expose_headers=["X-Request-ID"],
+    )
+
+
 def create_app(settings: Settings | None = None, provider: LlmProvider | None = None) -> FastAPI:
     config = settings if settings is not None else Settings()
 
@@ -64,6 +89,9 @@ def create_app(settings: Settings | None = None, provider: LlmProvider | None = 
             provider=provider if provider is not None else _build_provider(config),
             settings=config,
         )
+        from app.api.auth_jwt import JwtVerifier
+
+        app.state.jwt_verifier = JwtVerifier(config)
         try:
             async with app.state.session_factory() as session:
                 await reap_orphaned_runs(session=session, settings=config)
@@ -83,6 +111,9 @@ def create_app(settings: Settings | None = None, provider: LlmProvider | None = 
     app = FastAPI(title="Streaming Copilot API", version="0.1.0", lifespan=lifespan)
     app.state.settings = config
     install_error_handlers(app)
+    install_observability(app, config)
+    install_cors(app, config)
+    app.add_middleware(RequestBodyLimitMiddleware, max_bytes=config.max_request_bytes)
     app.include_router(router)
     app.include_router(conversations_router)
     app.include_router(runs_router)
@@ -90,3 +121,68 @@ def create_app(settings: Settings | None = None, provider: LlmProvider | None = 
     if config.app_env == "development":
         app.include_router(dev_router)
     return app
+
+
+def install_observability(app: FastAPI, config: Settings) -> None:
+    from app.observability.logging import (
+        configure_logging,
+        new_request_id,
+        new_trace_id,
+        request_id_var,
+        trace_id_var,
+    )
+    from app.observability.metrics import (
+        ACCEPT_LATENCY_SECONDS,
+        HTTP_REQUESTS_TOTAL,
+        METRICS_CONTENT_TYPE,
+        render_metrics,
+    )
+
+    configure_logging(config.log_level)
+
+    @app.middleware("http")
+    async def correlate_requests(
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
+        request_id = _client_request_id(request.headers.get("x-request-id")) or new_request_id()
+        trace_id = new_trace_id()
+        request_id_var.set(request_id)
+        trace_id_var.set(trace_id)
+        request.state.request_id = request_id
+        request.state.trace_id = trace_id
+        started = asyncio.get_running_loop().time()
+        request.state.accepted_at = started
+        try:
+            response = await call_next(request)
+        finally:
+            elapsed = asyncio.get_running_loop().time() - started
+            ACCEPT_LATENCY_SECONDS.labels(endpoint=_endpoint_label(request)).observe(elapsed)
+        response.headers["X-Request-ID"] = request_id
+        problem_code = response.headers.get("x-problem-code", "")
+        if "x-problem-code" in response.headers:
+            del response.headers["x-problem-code"]
+        HTTP_REQUESTS_TOTAL.labels(
+            endpoint=_endpoint_label(request),
+            status=str(response.status_code),
+            code=problem_code,
+        ).inc()
+        return response
+
+    @app.get("/metrics", include_in_schema=False)
+    async def metrics_endpoint() -> Response:
+        return Response(content=render_metrics(), media_type=METRICS_CONTENT_TYPE)
+
+
+def _client_request_id(raw: str | None) -> str | None:
+    """Accept a caller-supplied request ID only when it is short and log-safe."""
+    if raw is not None and _REQUEST_ID_PATTERN.match(raw):
+        return raw
+    return None
+
+
+def _endpoint_label(request: Request) -> str:
+    route = request.scope.get("route")
+    path = getattr(route, "path", None)
+    # Fall back to a fixed label so unmapped paths cannot explode metric cardinality.
+    return str(path) if path else "unmatched"

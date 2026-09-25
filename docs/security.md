@@ -20,6 +20,7 @@ Browser requests, model output, provider errors, Markdown, event payloads, and i
 - If cookies authenticate mutations, require CSRF protection and verify `Origin`.
 - Restrict CORS to explicit production origins; never combine wildcard origins with credentials.
 - Apply these headers on the web origin: `Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY`, `Permissions-Policy: camera=(), microphone=(), geolocation=()`.
+- The web origin issues the CSP per request. `script-src` adds a per-request nonce (`script-src 'self' 'nonce-…'`) so Next.js's inline bootstrap/flight scripts run without `'unsafe-inline'`; the nonce is minted in `apps/web/middleware.ts` and forwarded on the request (`x-nonce` plus the request `Content-Security-Policy`) so Next.js stamps its scripts and the root layout renders dynamically. `'unsafe-eval'` is added to `script-src` only outside production (for `next dev` HMR) and never ships to production; `style-src` keeps `'unsafe-inline'`.
 - Render Markdown without raw HTML and sanitize links/protocols.
 - Do not place provider keys, database credentials, or privileged diagnostics in the web bundle.
 

@@ -16,40 +16,40 @@
 
 ### Task 1: JWT adapter and CSRF
 
-- [ ] Production startup requires JWKS/issuer/audience.
-- [ ] Invalid token → 401; valid `sub` scopes queries.
-- [ ] If `AUTH_COOKIE_NAME` set: cookie holds the JWT; mutations without `Authorization` require `X-CSRF-Token` matching `csrf_token` cookie and `Origin` in `ALLOWED_ORIGINS`.
-- [ ] Dev adapter still refused when `APP_ENV!=development`.
-- [ ] Commit `feat: validate host jwt at the api boundary`.
+- [x] Production startup requires JWKS/issuer/audience.
+- [x] Invalid token → 401; valid `sub` scopes queries.
+- [x] If `AUTH_COOKIE_NAME` set: cookie holds the JWT; mutations without `Authorization` require `X-CSRF-Token` matching `csrf_token` cookie and `Origin` in `ALLOWED_ORIGINS`.
+- [x] Dev adapter still refused when `APP_ENV!=development`.
+- [x] Commit `feat: validate host jwt at the api boundary`.
 
 ### Task 2: Rate limits and bounds
 
-- [ ] Per-user `CREATE_RESPONSE_PER_MINUTE` in **process memory** (not Postgres) on create/retry/regenerate → 429 + `Retry-After` + rate-limit headers. Document that N replicas multiply the effective cluster quota in V1.
-- [ ] `MAX_REQUEST_BYTES` → 413.
-- [ ] `MAX_MESSAGE_CHARS` already 400.
-- [ ] Commit `feat: rate limit and body bounds`.
+- [x] Per-user `CREATE_RESPONSE_PER_MINUTE` in **process memory** (not Postgres) on create/retry/regenerate → 429 + `Retry-After` + rate-limit headers. Document that N replicas multiply the effective cluster quota in V1.
+- [x] `MAX_REQUEST_BYTES` → 413.
+- [x] `MAX_MESSAGE_CHARS` already 400.
+- [x] Commit `feat: rate limit and body bounds`.
 
 ### Task 3: Telemetry
 
-- [ ] Metrics from the observability name table.
-- [ ] Logs include correlation IDs; caplog tests fail if prompt/response substrings appear.
-- [ ] `user_id` hashed; raw identity not logged.
-- [ ] Traces omit provider text.
-- [ ] Commit `feat: add copilot metrics logs and traces`.
+- [x] Metrics from the observability name table.
+- [x] Logs include correlation IDs; caplog tests fail if prompt/response substrings appear.
+- [x] `user_id` hashed; raw identity not logged.
+- [x] Traces omit provider text.
+- [x] Commit `feat: add copilot metrics logs and traces`.
 
 ### Task 4: Browser security
 
-- [ ] CSP and headers from `docs/security.md`.
-- [ ] CORS allow-list tests: credentialed wildcard rejected.
-- [ ] Markdown XSS suite in CI.
-- [ ] Commit `feat: lock browser security headers and cors`.
+- [x] CSP and headers from `docs/security.md`.
+- [x] CORS allow-list tests: credentialed wildcard rejected.
+- [x] Markdown XSS suite in CI.
+- [x] Commit `feat: lock browser security headers and cors`.
 
 ### Task 5: Deploy topology
 
-- [ ] Document edge: web origin, `/v1` proxy, `/health/live` public, `/health/ready` private.
-- [ ] Secret injection via env, not files in the image.
-- [ ] Dependency and secret scanning in CI.
-- [ ] Commit `feat: production topology and scanning`.
+- [x] Document edge: web origin, `/v1` proxy, `/health/live` public, `/health/ready` private.
+- [x] Secret injection via env, not files in the image.
+- [x] Dependency and secret scanning in CI.
+- [x] Commit `feat: production topology and scanning`.
 
 ## Stop gate
 

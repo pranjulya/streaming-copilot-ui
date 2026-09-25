@@ -6,6 +6,7 @@ from uuid import UUID
 
 from fastapi import Request
 
+from app.api.bounds import enforce_body_bound
 from app.api.errors import AppError
 
 
@@ -42,6 +43,7 @@ def reject_unknown(body: dict[str, object], allowed: set[str]) -> None:
 
 async def read_json_body(request: Request, allowed: set[str]) -> tuple[bytes, dict[str, object]]:
     raw_body = await request.body()
+    enforce_body_bound(request, raw_body)
     body = parse_json_object(raw_body)
     reject_unknown(body, allowed)
     return raw_body, body

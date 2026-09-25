@@ -64,6 +64,8 @@ class Settings(BaseSettings):
             raise ValueError("DATABASE_URL must be a PostgreSQL asyncpg URL with host and database")
         if self.lease_renew_seconds >= self.lease_seconds:
             raise ValueError("LEASE_RENEW_SECONDS must be less than LEASE_SECONDS")
+        if "*" in [item.strip() for item in self.allowed_origins.split(",")]:
+            raise ValueError("ALLOWED_ORIGINS must be an explicit allow-list, not a wildcard")
         if self.app_env == "development":
             self.dev_user_id = self.dev_user_id or "dev-user"
         else:

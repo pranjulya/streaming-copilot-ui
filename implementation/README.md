@@ -38,4 +38,5 @@ This directory is an execution map, not application code. Read `../Implementatio
 | 04 | Implemented; PR open | `phase-04-frontend-chat` |
 | 05 | Implemented; PR open | `phase-05-end-to-end-streaming` |
 | 06 | Implemented; pending gate review | `phase-06-resilience-controls` |
-| 07–08 | Not started | Phase 06 gate remains |
+| 07 | Implemented; pending gate review | `phase-07-production-guardrails` |
+| 08 | Not started | Phase 07 gate remains |
