@@ -70,6 +70,12 @@ Canonical metric names (Units in braces):
 | `copilot_db_tx_seconds` | histogram | `op` |
 | `copilot_tokens_total` | counter | `direction`, `model` |
 
+Every name above is registered. All are incremented/observed on this branch except
+`copilot_content_mismatch_total`: nothing in the service compares a stream's final
+content against canonical storage, so it has no honest call site yet and stays at zero.
+Do not panel it until a reconciliation call site exists; `services/api/tests/test_observability.py`
+classifies each declared series as wired or declared-but-not-emitting.
+
 ## 4. Traces
 
 One trace spans HTTP acceptance, ownership/idempotency transaction, supervisor start, provider request, event commits, and terminal transition. Long-lived event-follow reads may use linked spans to avoid one unbounded trace. Provider text and full prompts are excluded from span attributes.

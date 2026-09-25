@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.auth import Actor
 from app.api.errors import AppError
 from app.chat.responses import RunSnapshot, active_run_snapshot
+from app.observability.metrics import IDEMPOTENCY_HITS_TOTAL
 from app.persistence import conversations as repository
 from app.persistence.models import Conversation, IdempotencyRecord, Message
 from app.settings import Settings
@@ -90,6 +91,7 @@ async def _find_valid_record(
         await session.commit()
         return None
     if record.request_hash != request_hash:
+        IDEMPOTENCY_HITS_TOTAL.labels(operation=operation, result="conflict").inc()
         raise AppError(
             409,
             "idempotency_key_conflict",
@@ -116,6 +118,7 @@ async def create_conversation(
                     "idempotency_key_conflict",
                     "Idempotency-Key refers to a conversation that no longer exists",
                 )
+            IDEMPOTENCY_HITS_TOTAL.labels(operation=operation, result="replay").inc()
             return conversation
         conversation = Conversation(
             user_id=actor.user_id,
@@ -210,6 +213,7 @@ async def patch_conversation(
             current = await repository.get_conversation(session, id, actor.user_id)
             if current is None:
                 raise AppError(404, "not_found", "Conversation not found")
+            IDEMPOTENCY_HITS_TOTAL.labels(operation=operation, result="replay").inc()
             return current
         now = datetime.now(UTC)
         if patch.title is not None:

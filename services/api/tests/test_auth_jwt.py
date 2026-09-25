@@ -212,7 +212,7 @@ def test_alg_none_and_hs256_tokens_are_401() -> None:
 
 
 def test_hash_user_id_is_stable_and_never_raw() -> None:
-    from app.api.auth_jwt import hash_user_id
+    from app.observability.logging import hash_user_id
 
     assert hash_user_id("alice") == hash_user_id("alice")
     assert "alice" not in hash_user_id("alice")

@@ -51,4 +51,22 @@ describe("browser security headers", () => {
     expect(csp).toContain(`'nonce-${nonce}'`);
     expect(NONCE_HEADER).toBe("x-nonce");
   });
+
+  test("middleware forwards the nonce on the request so Next.js stamps its scripts", () => {
+    // Next.js extracts the nonce from the request CSP header; without this the strict
+    // production CSP would block Next's inline bootstrap/flight scripts.
+    const response = middleware(
+      new NextRequest(new URL("http://127.0.0.1:3000/c/demo")),
+    );
+    const overrides =
+      response.headers.get("x-middleware-override-headers") ?? "";
+    expect(overrides.split(",")).toContain(NONCE_HEADER);
+
+    const forwardedNonce = response.headers.get("x-middleware-request-x-nonce");
+    expect(forwardedNonce).toBeTruthy();
+    const forwardedCsp = response.headers.get(
+      "x-middleware-request-content-security-policy",
+    );
+    expect(forwardedCsp).toContain(`'nonce-${forwardedNonce}'`);
+  });
 });

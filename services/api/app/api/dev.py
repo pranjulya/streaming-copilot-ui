@@ -3,6 +3,7 @@ import json
 from fastapi import APIRouter, Depends, Request
 
 from app.api.auth import Actor, require_actor
+from app.api.bounds import enforce_body_bound
 from app.api.errors import AppError
 from app.providers.fake import planned_provider_from_steps
 
@@ -19,6 +20,7 @@ async def set_fake_plan(
     if settings.app_env != "development":
         raise AppError(404, "not_found", "Not found")
     raw = await request.body()
+    enforce_body_bound(request, raw)
     try:
         body = json.loads(raw) if raw.strip() else {}
     except ValueError:

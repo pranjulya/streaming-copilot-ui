@@ -21,9 +21,14 @@ from app.chat.event_writer import (
     start_run,
 )
 from app.chat.failures import safe_failure
-from app.observability.metrics import RUNS_ACTIVE
+from app.observability.metrics import (
+    GENERATION_DURATION_SECONDS,
+    PROVIDER_FIRST_TOKEN_SECONDS,
+    RUNS_ACTIVE,
+)
 from app.observability.tracing import generation_span
 from app.persistence.models import Message, ResponseRun
+from app.persistence.session import db_transaction
 from app.providers.protocol import (
     CancelSignal,
     LlmProvider,
@@ -120,7 +125,7 @@ class GenerationSupervisor:
 
     async def _renew_lease(self, run_id: UUID) -> None:
         async with self._session_factory() as session:
-            async with session.begin():
+            async with db_transaction(session, "renew_lease"):
                 run = await session.scalar(
                     select(ResponseRun).where(ResponseRun.id == run_id).with_for_update()
                 )
@@ -134,12 +139,14 @@ class GenerationSupervisor:
 
     async def _supervise_run(self, run_id: UUID) -> None:
         signal = CancelSignal()
+        generation_started: float | None = None
         try:
             with generation_span(logger, run_id):
                 if await self._cancel_requested(run_id):
                     async with self._session_factory() as session:
                         await cancel_run(run_id, session=session)
                     return
+                generation_started = asyncio.get_running_loop().time()
                 async with self._session_factory() as session:
                     await start_run(run_id, session=session)
                 async with self._session_factory() as session:
@@ -166,6 +173,10 @@ class GenerationSupervisor:
         finally:
             self._tasks.pop(run_id, None)
             RUNS_ACTIVE.labels(model=self._settings.xai_model).set(len(self._tasks))
+            if generation_started is not None:
+                GENERATION_DURATION_SECONDS.labels(model=self._settings.xai_model).observe(
+                    asyncio.get_running_loop().time() - generation_started
+                )
 
     async def _cancel_after_rejected_append(self, run_id: UUID) -> None:
         """Finish as cancelled when the append a pending cancel rejected was the last write.
@@ -201,6 +212,7 @@ class GenerationSupervisor:
 
         iterator = self._provider.stream(messages, signal=signal)
         next_task: asyncio.Task[ProviderDelta | None] = asyncio.create_task(_next_delta(iterator))
+        first_token_seen = False
         try:
             while True:
                 now = loop.time()
@@ -252,6 +264,11 @@ class GenerationSupervisor:
                     await self._safe_fail(run_id, delta.error.code)
                     return
                 if delta.text:
+                    if not first_token_seen:
+                        first_token_seen = True
+                        PROVIDER_FIRST_TOKEN_SECONDS.labels(model=settings.xai_model).observe(
+                            loop.time() - started
+                        )
                     buffer.append(delta.text)
                     buffered_chars += len(delta.text)
                     produced += len(delta.text)

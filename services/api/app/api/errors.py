@@ -5,6 +5,8 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
 
+from app.observability.logging import request_id_var
+
 PROBLEM_TYPE_BASE = "https://copilot.local/problems/"
 
 
@@ -37,7 +39,8 @@ def problem_response(
         "title": title,
         "status": status_code,
         "code": code,
-        "diagnostic_id": str(uuid.uuid4()),
+        # The diagnostic ID is the request ID so a user-visible problem maps to one log line.
+        "diagnostic_id": request_id_var.get() or str(uuid.uuid4()),
     }
     content.update(extensions)
     return JSONResponse(

@@ -11,12 +11,14 @@ from app.api.errors import AppError
 from app.chat.event_writer import fail_locked_run
 from app.chat.failures import safe_failure
 from app.chat.state_machine import InvalidStateTransition, is_terminal
+from app.observability.metrics import IDEMPOTENCY_HITS_TOTAL, RUNS_ORPHANED_TOTAL
 from app.persistence.models import (
     Conversation,
     IdempotencyRecord,
     Message,
     ResponseRun,
 )
+from app.persistence.session import db_transaction
 from app.settings import Settings
 
 ACTIVE_RUN_STATUSES = ("queued", "streaming", "cancelling")
@@ -94,6 +96,7 @@ async def _find_key(
             await session.delete(record)
             return None
     if record.request_hash != request_hash:
+        IDEMPOTENCY_HITS_TOTAL.labels(operation=operation, result="conflict").inc()
         raise AppError(
             409,
             "idempotency_key_conflict",
@@ -106,16 +109,19 @@ async def _keyed_run(
     session: AsyncSession,
     record: IdempotencyRecord | None,
     user_id: str,
+    operation: str,
 ) -> ResponseRun | None:
     if record is None:
         return None
     run = await session.get(ResponseRun, record.resource_id)
     if run is None or run.user_id != user_id:
+        IDEMPOTENCY_HITS_TOTAL.labels(operation=operation, result="conflict").inc()
         raise AppError(
             409,
             "idempotency_key_conflict",
             "Idempotency-Key refers to a run that no longer exists",
         )
+    IDEMPOTENCY_HITS_TOTAL.labels(operation=operation, result="replay").inc()
     return run
 
 
@@ -179,7 +185,7 @@ async def create_response(
     operation = "create_response"
     for _ in range(2):
         try:
-            async with session.begin():
+            async with db_transaction(session, "create_response"):
                 await _lock_user(session, actor.user_id)
                 conversation = await _owned_conversation(
                     session, cmd.conversation_id, actor.user_id
@@ -189,7 +195,7 @@ async def create_response(
                 record = await _find_key(
                     session, actor.user_id, operation, cmd.idempotency_key, cmd.request_hash
                 )
-                replay = await _keyed_run(session, record, actor.user_id)
+                replay = await _keyed_run(session, record, actor.user_id, operation)
                 if replay is not None:
                     return replay
                 existing_message = await session.scalar(
@@ -210,6 +216,7 @@ async def create_response(
                             "idempotency_key_conflict",
                             "Existing turn has no response run",
                         )
+                    IDEMPOTENCY_HITS_TOTAL.labels(operation=operation, result="replay").inc()
                     return existing_run
                 active = await _active_run_id(session, cmd.conversation_id)
                 if active is not None:
@@ -293,7 +300,7 @@ async def retry_run(
     operation = "retry_run"
     for _ in range(2):
         try:
-            async with session.begin():
+            async with db_transaction(session, "retry_run"):
                 await _lock_user(session, actor.user_id)
                 source = await session.scalar(
                     select(ResponseRun).where(
@@ -318,7 +325,7 @@ async def retry_run(
                     record = await _find_key(
                         session, actor.user_id, operation, idempotency_key, request_hash
                     )
-                    replay = await _keyed_run(session, record, actor.user_id)
+                    replay = await _keyed_run(session, record, actor.user_id, operation)
                     if replay is not None:
                         return replay
                 active = await _active_run_id(session, source.conversation_id)
@@ -393,7 +400,7 @@ async def regenerate_message(
     operation = "regenerate_message"
     for _ in range(2):
         try:
-            async with session.begin():
+            async with db_transaction(session, "regenerate_message"):
                 await _lock_user(session, actor.user_id)
                 message = await session.scalar(
                     select(Message)
@@ -415,7 +422,7 @@ async def regenerate_message(
                     record = await _find_key(
                         session, actor.user_id, operation, idempotency_key, request_hash
                     )
-                    replay = await _keyed_run(session, record, actor.user_id)
+                    replay = await _keyed_run(session, record, actor.user_id, operation)
                     if replay is not None:
                         return replay
                 active = await _active_run_id(session, message.conversation_id)
@@ -522,7 +529,7 @@ async def _fail_targets(
     reaped = 0
     for run_id in target_ids:
         try:
-            async with session.begin():
+            async with db_transaction(session, "reap_run"):
                 run = await session.scalar(
                     select(ResponseRun).where(ResponseRun.id == run_id).with_for_update()
                 )
@@ -531,6 +538,7 @@ async def _fail_targets(
                 if not _is_orphan_run(run, settings, include_own_instance=include_own_instance):
                     continue
                 await fail_locked_run(session, run, safe_failure("server_restart"))
+            RUNS_ORPHANED_TOTAL.inc()
             reaped += 1
         except InvalidStateTransition:
             continue
@@ -538,7 +546,7 @@ async def _fail_targets(
 
 
 async def reap_orphaned_runs(*, session: AsyncSession, settings: Settings) -> int:
-    async with session.begin():
+    async with db_transaction(session, "reap_orphaned"):
         target_ids = list(
             (
                 await session.scalars(
@@ -553,7 +561,7 @@ async def reap_orphaned_runs(*, session: AsyncSession, settings: Settings) -> in
 
 
 async def reap_expired_leases(*, session: AsyncSession, settings: Settings) -> int:
-    async with session.begin():
+    async with db_transaction(session, "reap_expired"):
         target_ids = list(
             (
                 await session.scalars(
@@ -584,7 +592,7 @@ async def get_run(run_id: UUID, actor: Actor, *, session: AsyncSession) -> RunSn
 
 
 async def request_cancel(run_id: UUID, actor: Actor, *, session: AsyncSession) -> RunSnapshot:
-    async with session.begin():
+    async with db_transaction(session, "request_cancel"):
         run = await session.scalar(
             select(ResponseRun)
             .where(ResponseRun.id == run_id, ResponseRun.user_id == actor.user_id)

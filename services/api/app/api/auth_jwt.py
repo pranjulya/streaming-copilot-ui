@@ -1,4 +1,3 @@
-import hashlib
 import hmac
 from collections.abc import Callable
 from typing import Any
@@ -48,10 +47,6 @@ class JwtVerifier:
         return subject.strip()
 
 
-def hash_user_id(user_id: str) -> str:
-    return hashlib.sha256(user_id.encode("utf-8")).hexdigest()[:16]
-
-
 def _bearer_token(request: Request) -> str | None:
     header = request.headers.get("authorization")
     if header is None:
@@ -69,7 +64,7 @@ def _csrf_match(header: str, cookie: str) -> bool:
         return False
 
 
-def _cookie_authenticated_mutation(request: Request, cookie_name: str) -> bool:
+def _cookie_authenticated_mutation(request: Request) -> bool:
     if request.method in ("GET", "HEAD", "OPTIONS"):
         return False
     return True
@@ -86,7 +81,7 @@ def authenticate(request: Request, settings: Settings) -> tuple[str, str]:
         cookie_token = request.cookies.get(cookie_name)
         if cookie_token:
             user_id = verifier.actor_user_id(cookie_token)
-            if _cookie_authenticated_mutation(request, cookie_name):
+            if _cookie_authenticated_mutation(request):
                 csrf_header = request.headers.get("x-csrf-token")
                 csrf_cookie = request.cookies.get("csrf_token")
                 if not csrf_header or not csrf_cookie or not _csrf_match(csrf_header, csrf_cookie):

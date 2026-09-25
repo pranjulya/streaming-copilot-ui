@@ -9,8 +9,10 @@ from app.api import rfc3339
 from app.api.errors import AppError
 from app.chat.state_machine import assert_transition, is_terminal
 from app.observability.metrics import (
+    CANCEL_ACK_SECONDS,
     EVENTS_EMITTED_TOTAL,
     RUNS_TERMINAL_TOTAL,
+    SEQUENCE_GAPS_TOTAL,
     TOKENS_TOTAL,
 )
 from app.persistence.models import (
@@ -20,6 +22,7 @@ from app.persistence.models import (
     StreamEventRecord,
     uuid7,
 )
+from app.persistence.session import db_transaction
 from app.providers.protocol import Usage
 
 PROTOCOL_VERSION = "1.0"
@@ -135,7 +138,7 @@ async def _stored_event(session: AsyncSession, run_id: UUID, event_type: str) ->
 
 
 async def start_run(run_id: UUID, *, session: AsyncSession) -> StreamEvent:
-    async with session.begin():
+    async with db_transaction(session, "start_run"):
         run = await _load_run_for_update(session, run_id)
         if run.status == "streaming":
             stored = await _stored_event(session, run_id, "response.started")
@@ -162,7 +165,7 @@ async def start_run(run_id: UUID, *, session: AsyncSession) -> StreamEvent:
 
 
 async def append_delta(run_id: UUID, delta: str, *, session: AsyncSession) -> StreamEvent:
-    async with session.begin():
+    async with db_transaction(session, "append_delta"):
         run = await _load_run_for_update(session, run_id)
         if run.status != "streaming":
             raise AppError(
@@ -189,7 +192,7 @@ async def append_delta(run_id: UUID, delta: str, *, session: AsyncSession) -> St
 
 
 async def append_usage(run_id: UUID, usage: Usage, *, session: AsyncSession) -> StreamEvent:
-    async with session.begin():
+    async with db_transaction(session, "append_usage"):
         run = await _load_run_for_update(session, run_id)
         if run.status != "streaming":
             raise AppError(
@@ -215,7 +218,7 @@ async def append_usage(run_id: UUID, usage: Usage, *, session: AsyncSession) -> 
 async def complete_run(
     run_id: UUID, result: CompletionResult, *, session: AsyncSession
 ) -> tuple[StreamEvent, StreamEvent]:
-    async with session.begin():
+    async with db_transaction(session, "complete_run"):
         run = await _load_run_for_update(session, run_id)
         if is_terminal(run.status):
             if run.status != "completed":
@@ -298,7 +301,7 @@ async def fail_locked_run(
 
 
 async def fail_run(run_id: UUID, failure: SafeFailure, *, session: AsyncSession) -> StreamEvent:
-    async with session.begin():
+    async with db_transaction(session, "fail_run"):
         run = await _load_run_for_update(session, run_id)
         if is_terminal(run.status):
             if run.status != "failed":
@@ -313,7 +316,7 @@ async def fail_run(run_id: UUID, failure: SafeFailure, *, session: AsyncSession)
 
 
 async def cancel_run(run_id: UUID, *, session: AsyncSession) -> StreamEvent:
-    async with session.begin():
+    async with db_transaction(session, "cancel_run"):
         run = await _load_run_for_update(session, run_id)
         if is_terminal(run.status):
             if run.status != "cancelled":
@@ -338,6 +341,8 @@ async def cancel_run(run_id: UUID, *, session: AsyncSession) -> StreamEvent:
         conversation = await _load_conversation(session, run.conversation_id)
         conversation.updated_at = now
         RUNS_TERMINAL_TOTAL.labels(status="cancelled", error_code="", model=run.model or "").inc()
+        if run.cancel_requested_at is not None:
+            CANCEL_ACK_SECONDS.observe((now - run.cancel_requested_at).total_seconds())
         data: dict[str, object] = {
             "reason": "user_requested",
             "partial_content_retained": bool(message.content),
@@ -367,6 +372,8 @@ async def follow_events(
         not records or records[0].sequence > after_sequence + 1
     )
     if needs_snapshot:
+        # The follower's cursor sits behind the retained window: the sequence has a gap.
+        SEQUENCE_GAPS_TOTAL.inc()
         message = await _load_message(session, run.assistant_message_id)
         data: dict[str, object] = {
             "status": run.status,

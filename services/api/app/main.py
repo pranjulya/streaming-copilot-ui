@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import re
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
 
@@ -20,6 +21,9 @@ from app.providers.protocol import LlmProvider
 from app.settings import Settings
 
 logger = logging.getLogger(__name__)
+
+# Client-supplied correlation IDs must be short and log-safe; anything else is replaced.
+_REQUEST_ID_PATTERN = re.compile(r"\A[A-Za-z0-9._:-]{1,128}\Z")
 
 
 def _build_provider(config: Settings) -> LlmProvider:
@@ -120,8 +124,6 @@ def create_app(settings: Settings | None = None, provider: LlmProvider | None = 
 
 
 def install_observability(app: FastAPI, config: Settings) -> None:
-    from starlette.middleware.base import BaseHTTPMiddleware
-
     from app.observability.logging import (
         configure_logging,
         new_request_id,
@@ -143,13 +145,14 @@ def install_observability(app: FastAPI, config: Settings) -> None:
         request: Request,
         call_next: Callable[[Request], Awaitable[Response]],
     ) -> Response:
-        request_id = request.headers.get("x-request-id") or new_request_id()
+        request_id = _client_request_id(request.headers.get("x-request-id")) or new_request_id()
         trace_id = new_trace_id()
         request_id_var.set(request_id)
         trace_id_var.set(trace_id)
         request.state.request_id = request_id
         request.state.trace_id = trace_id
         started = asyncio.get_running_loop().time()
+        request.state.accepted_at = started
         try:
             response = await call_next(request)
         finally:
@@ -170,10 +173,16 @@ def install_observability(app: FastAPI, config: Settings) -> None:
     async def metrics_endpoint() -> Response:
         return Response(content=render_metrics(), media_type=METRICS_CONTENT_TYPE)
 
-    del BaseHTTPMiddleware
+
+def _client_request_id(raw: str | None) -> str | None:
+    """Accept a caller-supplied request ID only when it is short and log-safe."""
+    if raw is not None and _REQUEST_ID_PATTERN.match(raw):
+        return raw
+    return None
 
 
 def _endpoint_label(request: Request) -> str:
     route = request.scope.get("route")
-    path = getattr(route, "path", None) or request.url.path
-    return str(path)
+    path = getattr(route, "path", None)
+    # Fall back to a fixed label so unmapped paths cannot explode metric cardinality.
+    return str(path) if path else "unmatched"

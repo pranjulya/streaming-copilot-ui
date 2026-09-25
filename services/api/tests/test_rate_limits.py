@@ -213,3 +213,61 @@ def test_idle_rate_limit_buckets_are_evicted() -> None:
     limiter.check("fresh-user")
     assert "stale-user" not in limiter._events
     assert "fresh-user" in limiter._events
+
+
+def test_low_quota_mutating_response_carries_rate_limit_headers() -> None:
+    async def scenario() -> None:
+        with limited_client(new_user("lowquota")) as client:
+            conversation = create_conversation(client)
+            with client.stream(
+                "POST",
+                f"/v1/conversations/{conversation}/responses",
+                json={"client_message_id": str(uuid.uuid4()), "content": "one"},
+                headers={"Idempotency-Key": str(uuid.uuid4())},
+            ) as response:
+                assert response.status_code == 200
+                assert response.headers["x-ratelimit-limit"] == "2"
+                assert response.headers["x-ratelimit-remaining"] == "1"
+                assert response.headers["x-ratelimit-policy"] == "user;w=60"
+                b"".join(response.iter_bytes())
+
+    asyncio.run(scenario())
+
+
+def test_high_quota_mutating_response_omits_rate_limit_headers() -> None:
+    async def scenario() -> None:
+        with limited_client(new_user("highquota"), create_response_per_minute=20) as client:
+            conversation = create_conversation(client)
+            with client.stream(
+                "POST",
+                f"/v1/conversations/{conversation}/responses",
+                json={"client_message_id": str(uuid.uuid4()), "content": "one"},
+                headers={"Idempotency-Key": str(uuid.uuid4())},
+            ) as response:
+                assert response.status_code == 200
+                assert "x-ratelimit-limit" not in response.headers
+                b"".join(response.iter_bytes())
+
+    asyncio.run(scenario())
+
+
+def test_dev_fake_plan_body_is_bounded() -> None:
+    async def scenario() -> None:
+        with limited_client(new_user("fakeplan")) as client:
+            oversized = client.post(
+                "/v1/_test/fake-plan",
+                content=json.dumps({"steps": [{"deltas": ["x" * 400]}]}),
+                headers={"content-type": "application/json"},
+            )
+            assert oversized.status_code == 413
+            assert oversized.json()["code"] == "payload_too_large"
+
+            accepted = client.post(
+                "/v1/_test/fake-plan",
+                content=json.dumps({"steps": [{"deltas": ["ok"]}]}),
+                headers={"content-type": "application/json"},
+            )
+            assert accepted.status_code == 200
+            assert accepted.json()["status"] == "planned"
+
+    asyncio.run(scenario())
