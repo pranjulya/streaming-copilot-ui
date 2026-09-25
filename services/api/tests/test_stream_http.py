@@ -8,7 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 from jsonschema import Draft202012Validator, FormatChecker
 
-from tests.support import database_url, new_user
+from tests.support import build_settings, new_user, writer_factory
 
 pytestmark = pytest.mark.skipif(
     not os.getenv("TEST_DATABASE_URL"), reason="Set TEST_DATABASE_URL for real Postgres"
@@ -23,10 +23,7 @@ def validator() -> Draft202012Validator:
 
 
 def stream_settings(**overrides: object):
-    from app.settings import Settings
-
     values: dict[str, object] = {
-        "database_url": database_url(),
         "delta_flush_ms": 5,
         "event_follow_poll_ms": 10,
         "heartbeat_interval_seconds": 30,
@@ -37,7 +34,7 @@ def stream_settings(**overrides: object):
         "shutdown_grace_seconds": 1,
     }
     values.update(overrides)
-    return Settings(_env_file=None, **values)  # type: ignore[arg-type]
+    return build_settings(**values)
 
 
 def make_app(provider, **settings_overrides: object):
@@ -65,9 +62,54 @@ def create_conversation(client: TestClient) -> str:
     return str(response.json()["id"])
 
 
-def test_create_and_stream_returns_schema_valid_ndjson() -> None:
-    from app.chat.event_writer import Usage
+def test_stream_emits_heartbeats_without_persisting_them() -> None:
+    from sqlalchemy import text as sql_text
+
     from app.providers.fake import FakeProvider
+
+    async def scenario() -> None:
+        user = new_user("heartbeat")
+        provider = FakeProvider(
+            deltas=["Back"], finish_reason="stop", delay_seconds=1.1
+        )
+        with api_client(
+            user, provider, heartbeat_interval_seconds=1, delta_flush_ms=1
+        ) as client:
+            conversation_id = create_conversation(client)
+            body = {"client_message_id": str(uuid.uuid4()), "content": "Explain backpressure"}
+            with client.stream(
+                "POST",
+                f"/v1/conversations/{conversation_id}/responses",
+                json=body,
+                headers={"Idempotency-Key": str(uuid.uuid4())},
+            ) as response:
+                assert response.status_code == 200
+                lines, _ = read_ndjson(response)
+
+        heartbeats = [line for line in lines if line["type"] == "heartbeat"]
+        assert heartbeats, "a slow provider must produce heartbeat lines"
+        for line in heartbeats:
+            assert line["sequence"] == line["data"]["last_sequence"]
+        run_id = lines[0]["run_id"]
+        factory = writer_factory()
+        async with factory() as session:
+            stored = (
+                await session.execute(
+                    sql_text(
+                        "SELECT count(*) FROM stream_events"
+                        " WHERE run_id = :id AND type = 'heartbeat'"
+                    ),
+                    {"id": run_id},
+                )
+            ).scalar_one()
+        assert stored == 0
+
+    asyncio.run(scenario())
+
+
+def test_create_and_stream_returns_schema_valid_ndjson() -> None:
+    from app.providers.fake import FakeProvider
+    from app.providers.protocol import Usage
 
     async def scenario() -> None:
         user = new_user("stream")

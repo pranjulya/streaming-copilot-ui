@@ -3,13 +3,13 @@ from collections.abc import AsyncIterator, Sequence
 
 import httpx
 
-from app.chat.event_writer import Usage
 from app.providers.protocol import (
     CancelSignal,
     ProviderDelta,
     ProviderError,
     ProviderMessage,
     ProviderStreamError,
+    Usage,
 )
 from app.settings import Settings
 

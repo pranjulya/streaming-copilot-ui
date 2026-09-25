@@ -6,17 +6,16 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from tests.support import database_url, new_user, seed_conversation, session_factory
+from tests.support import (
+    build_settings,
+    new_user,
+    seed_conversation,
+    session_factory,
+)
 
 pytestmark = pytest.mark.skipif(
     not os.getenv("TEST_DATABASE_URL"), reason="Set TEST_DATABASE_URL for real Postgres"
 )
-
-
-def context_settings(**overrides: object):
-    from app.settings import Settings
-
-    return Settings(_env_file=None, database_url=database_url(), **overrides)  # type: ignore[arg-type]
 
 
 _ORDER = itertools.count()
@@ -69,7 +68,7 @@ def test_context_keeps_newest_turns_within_budget_and_drops_oldest() -> None:
     async def scenario() -> None:
         factory = session_factory()
         user = new_user("ctx")
-        settings = context_settings(context_char_budget=40, system_prompt="SYS")
+        settings = build_settings(context_char_budget=40, system_prompt="SYS")
         async with factory() as session:
             async with session.begin():
                 conversation_id = await seed_conversation(session, user)
@@ -112,7 +111,7 @@ def test_context_drops_whole_turns_instead_of_orphan_assistants() -> None:
     async def scenario() -> None:
         factory = session_factory()
         user = new_user("ctx-turn")
-        settings = context_settings(context_char_budget=12, system_prompt="SYS")
+        settings = build_settings(context_char_budget=12, system_prompt="SYS")
         async with factory() as session:
             async with session.begin():
                 conversation_id = await seed_conversation(session, user)
@@ -155,7 +154,7 @@ def test_context_includes_only_visible_nonempty_assistant_messages() -> None:
     async def scenario() -> None:
         factory = session_factory()
         user = new_user("ctx-vis")
-        settings = context_settings(context_char_budget=10000, system_prompt="SYS")
+        settings = build_settings(context_char_budget=10000, system_prompt="SYS")
         async with factory() as session:
             async with session.begin():
                 conversation_id = await seed_conversation(session, user)
@@ -221,7 +220,7 @@ def test_context_reports_dropped_count_without_content_in_logs(caplog) -> None:
         factory = session_factory()
         user = new_user("ctx-log")
         secret = "SECRET-CONTENT-MARKER"
-        settings = context_settings(context_char_budget=30, system_prompt="SYS")
+        settings = build_settings(context_char_budget=30, system_prompt="SYS")
         async with factory() as session:
             async with session.begin():
                 conversation_id = await seed_conversation(session, user)
@@ -255,7 +254,7 @@ def supervisor_settings(**overrides: object):
         "max_output_chars": 100000,
     }
     values.update(overrides)
-    return context_settings(**values)
+    return build_settings(**values)
 
 
 async def seed_supervised_run(user: str, *, instance_id, status: str = "queued"):
@@ -335,7 +334,7 @@ async def assistant_content(assistant_message_id: uuid.UUID) -> tuple[str, str]:
 
 def make_supervisor(provider, settings):
     from app.chat.supervisor import GenerationSupervisor
-    from tests.test_retry_regenerate import writer_factory
+    from tests.support import writer_factory
 
     return GenerationSupervisor(
         session_factory=writer_factory(), provider=provider, settings=settings
@@ -385,8 +384,8 @@ def test_supervisor_start_renews_existing_lease_and_refuses_null_lease() -> None
 
 
 def test_supervisor_completes_run_and_persists_events() -> None:
-    from app.chat.event_writer import Usage
     from app.providers.fake import FakeProvider
+    from app.providers.protocol import Usage
 
     async def scenario() -> None:
         settings = supervisor_settings()
@@ -568,8 +567,7 @@ def test_wait_budget_honors_delta_flush_ms() -> None:
 
 
 def test_supervisor_completes_when_provider_hangs_after_finish() -> None:
-    from app.chat.event_writer import Usage
-    from app.providers.protocol import CancelSignal, ProviderDelta, ProviderMessage
+    from app.providers.protocol import CancelSignal, ProviderDelta, ProviderMessage, Usage
 
     class HangAfterFinish:
         async def stream(self, messages: list[ProviderMessage], *, signal: CancelSignal):

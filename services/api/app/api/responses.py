@@ -11,12 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.api import rfc3339
 from app.api.auth import Actor, require_actor
-from app.api.conversations import (
-    _fingerprint,
-    _parse_json_object,
-    _require_idempotency_key,
-)
 from app.api.errors import AppError
+from app.api.requests import fingerprint, read_json_body, require_idempotency_key
 from app.chat.event_writer import follow_events
 from app.chat.responses import (
     CreateResponse,
@@ -119,27 +115,20 @@ def _after_sequence(body: dict[str, object]) -> int:
     return value
 
 
-def _reject_unknown(body: dict[str, object], allowed: set[str]) -> None:
-    if set(body) - allowed:
-        raise AppError(400, "validation_failed", "Request body contains unknown fields")
-
-
 @router.post("/conversations/{conversation_id}/responses")
 async def create_response_and_stream(
     conversation_id: UUID,
     request: Request,
     actor: Actor = Depends(require_actor),
 ) -> StreamingResponse:
-    raw_body = await request.body()
-    body = _parse_json_object(raw_body)
-    _reject_unknown(body, {"client_message_id", "content"})
+    raw_body, body = await read_json_body(request, {"client_message_id", "content"})
     settings: Settings = request.app.state.settings
     cmd = CreateResponse(
         conversation_id=conversation_id,
         client_message_id=_client_message_id(body),
         content=_validated_content(body),
-        idempotency_key=_require_idempotency_key(request),
-        request_hash=_fingerprint(raw_body, "POST", request.url.path),
+        idempotency_key=require_idempotency_key(request),
+        request_hash=fingerprint(raw_body, "POST", request.url.path),
     )
     async with request.app.state.session_factory() as session:
         run = await create_response(cmd, actor, session=session, settings=settings)
@@ -153,9 +142,7 @@ async def stream_response_run(
     request: Request,
     actor: Actor = Depends(require_actor),
 ) -> StreamingResponse:
-    raw_body = await request.body()
-    body = _parse_json_object(raw_body)
-    _reject_unknown(body, {"after_sequence"})
+    _, body = await read_json_body(request, {"after_sequence"})
     async with request.app.state.session_factory() as session:
         await get_run(run_id, actor, session=session)
     settings: Settings = request.app.state.settings
@@ -170,9 +157,7 @@ async def retry_response_run(
     request: Request,
     actor: Actor = Depends(require_actor),
 ) -> StreamingResponse:
-    raw_body = await request.body()
-    body = _parse_json_object(raw_body)
-    _reject_unknown(body, set())
+    raw_body, _ = await read_json_body(request, set())
     settings: Settings = request.app.state.settings
     async with request.app.state.session_factory() as session:
         run = await retry_run(
@@ -180,8 +165,8 @@ async def retry_response_run(
             actor,
             session=session,
             settings=settings,
-            idempotency_key=_require_idempotency_key(request),
-            request_hash=_fingerprint(raw_body, "POST", request.url.path),
+            idempotency_key=require_idempotency_key(request),
+            request_hash=fingerprint(raw_body, "POST", request.url.path),
         )
     await _ensure_generation(request, run)
     return _ndjson_response(_follow(request.app.state.session_factory, run.id, 0, settings))
@@ -193,9 +178,7 @@ async def regenerate_message_and_stream(
     request: Request,
     actor: Actor = Depends(require_actor),
 ) -> StreamingResponse:
-    raw_body = await request.body()
-    body = _parse_json_object(raw_body)
-    _reject_unknown(body, set())
+    raw_body, _ = await read_json_body(request, set())
     settings: Settings = request.app.state.settings
     async with request.app.state.session_factory() as session:
         run = await regenerate_message(
@@ -203,8 +186,8 @@ async def regenerate_message_and_stream(
             actor,
             session=session,
             settings=settings,
-            idempotency_key=_require_idempotency_key(request),
-            request_hash=_fingerprint(raw_body, "POST", request.url.path),
+            idempotency_key=require_idempotency_key(request),
+            request_hash=fingerprint(raw_body, "POST", request.url.path),
         )
     await _ensure_generation(request, run)
     return _ndjson_response(_follow(request.app.state.session_factory, run.id, 0, settings))

@@ -1,5 +1,3 @@
-import hashlib
-import json
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Request
@@ -8,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api import rfc3339
 from app.api.auth import Actor, require_actor
 from app.api.errors import AppError
+from app.api.requests import fingerprint, read_json_body, require_idempotency_key
 from app.api.runs import run_snapshot_dict
 from app.chat.conversations import (
     ConversationPatch,
@@ -24,32 +23,6 @@ from app.persistence.session import get_session
 router = APIRouter(prefix="/v1/conversations", tags=["conversations"])
 
 CREATE_OPERATION_LIMITS = (1, 100)
-
-
-def _require_idempotency_key(request: Request) -> UUID:
-    raw = request.headers.get("idempotency-key")
-    if raw is None:
-        raise AppError(400, "validation_failed", "Idempotency-Key header is required")
-    try:
-        return UUID(raw)
-    except ValueError:
-        raise AppError(400, "validation_failed", "Idempotency-Key must be a UUID") from None
-
-
-def _fingerprint(raw_body: bytes, method: str, path: str) -> str:
-    return hashlib.sha256(raw_body + b"\n" + method.encode() + b"\n" + path.encode()).hexdigest()
-
-
-def _parse_json_object(raw_body: bytes) -> dict[str, object]:
-    if not raw_body.strip():
-        return {}
-    try:
-        parsed = json.loads(raw_body)
-    except (ValueError, UnicodeDecodeError):
-        raise AppError(400, "validation_failed", "Request body must be valid JSON") from None
-    if not isinstance(parsed, dict):
-        raise AppError(400, "validation_failed", "Request body must be a JSON object")
-    return parsed
 
 
 def _validated_title(value: object) -> str:
@@ -103,15 +76,11 @@ async def create_conversation_route(
     actor: Actor = Depends(require_actor),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, object]:
-    raw_body = await request.body()
-    body = _parse_json_object(raw_body)
-    unknown = set(body) - {"title"}
-    if unknown:
-        raise AppError(400, "validation_failed", "Request body contains unknown fields")
+    raw_body, body = await read_json_body(request, {"title"})
     cmd = CreateConversation(
         title=_validated_title(body["title"]) if "title" in body else None,
-        idempotency_key=_require_idempotency_key(request),
-        request_hash=_fingerprint(raw_body, "POST", request.url.path),
+        idempotency_key=require_idempotency_key(request),
+        request_hash=fingerprint(raw_body, "POST", request.url.path),
     )
     conversation = await create_conversation(cmd, actor, session=session)
     active = await active_run_map(session, [conversation.id])
@@ -171,13 +140,9 @@ async def patch_conversation_route(
     actor: Actor = Depends(require_actor),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, object]:
-    raw_body = await request.body()
-    body = _parse_json_object(raw_body)
+    raw_body, body = await read_json_body(request, {"title", "archived"})
     if not body:
         raise AppError(400, "validation_failed", "At least one field is required")
-    unknown = set(body) - {"title", "archived"}
-    if unknown:
-        raise AppError(400, "validation_failed", "Request body contains unknown fields")
     if "archived" in body and not isinstance(body["archived"], bool):
         raise AppError(400, "validation_failed", "archived must be a boolean")
     patch = ConversationPatch(
@@ -188,9 +153,9 @@ async def patch_conversation_route(
         conversation_id,
         patch,
         actor,
-        _require_idempotency_key(request),
+        require_idempotency_key(request),
         session=session,
-        request_hash=_fingerprint(raw_body, "PATCH", request.url.path),
+        request_hash=fingerprint(raw_body, "PATCH", request.url.path),
     )
     active = await active_run_map(session, [conversation.id])
     return conversation_dict(conversation, active_run_id=active.get(conversation.id))

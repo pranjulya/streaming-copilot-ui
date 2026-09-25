@@ -19,9 +19,8 @@ def test_fake_provider_default_finish_includes_zero_usage() -> None:
 
 
 def test_fake_provider_streams_scripted_text_and_finish() -> None:
-    from app.chat.event_writer import Usage
     from app.providers.fake import FakeProvider
-    from app.providers.protocol import CancelSignal, ProviderMessage
+    from app.providers.protocol import CancelSignal, ProviderMessage, Usage
 
     async def scenario() -> None:
         provider = FakeProvider(

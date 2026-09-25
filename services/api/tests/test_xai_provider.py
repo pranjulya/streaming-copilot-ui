@@ -4,14 +4,11 @@ import json
 import httpx
 import pytest
 
-from tests.support import database_url
+from tests.support import build_settings
 
 
 def xai_settings(**overrides: object):
-    from app.settings import Settings
-
     values: dict[str, object] = {
-        "database_url": database_url(),
         "app_env": "production",
         "xai_api_key": "test-key",
         "xai_base_url": "https://api.x.ai/v1",
@@ -20,7 +17,7 @@ def xai_settings(**overrides: object):
         "auth_jwt_jwks_url": "https://auth.example.test/jwks.json",
     }
     values.update(overrides)
-    return Settings(_env_file=None, **values)  # type: ignore[arg-type]
+    return build_settings(**values)
 
 
 def sse(*events: dict) -> bytes:
@@ -129,5 +126,23 @@ def test_xai_adapter_stops_after_response_completed() -> None:
 def test_xai_live_smoke_is_opt_in() -> None:
     import os
 
-    if not os.getenv("XAI_API_KEY"):
+    api_key = os.getenv("XAI_API_KEY")
+    if not api_key:
         pytest.skip("XAI_API_KEY is not set; live provider tests are opt-in")
+
+    from app.providers.protocol import CancelSignal, ProviderMessage
+    from app.providers.xai import XaiProvider
+
+    async def scenario() -> None:
+        provider = XaiProvider(xai_settings(xai_api_key=api_key))
+        deltas = [
+            delta
+            async for delta in provider.stream(
+                [ProviderMessage(role="user", content="Reply with exactly: ok")],
+                signal=CancelSignal(),
+            )
+        ]
+        assert deltas[-1].finish_reason is not None, "live stream must finish"
+        assert "".join(delta.text for delta in deltas).strip(), "live stream must return text"
+
+    asyncio.run(scenario())

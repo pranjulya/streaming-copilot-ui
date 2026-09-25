@@ -1,13 +1,13 @@
 import asyncio
 from collections.abc import AsyncIterator, Sequence
 
-from app.chat.event_writer import Usage
 from app.providers.protocol import (
     CancelSignal,
     ProviderDelta,
     ProviderError,
     ProviderMessage,
     ProviderStreamError,
+    Usage,
 )
 
 

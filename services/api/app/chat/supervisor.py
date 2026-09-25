@@ -13,8 +13,6 @@ from app.api.errors import AppError
 from app.chat.context import build_context
 from app.chat.event_writer import (
     CompletionResult,
-    SafeFailure,
-    Usage,
     append_delta,
     append_usage,
     cancel_run,
@@ -22,6 +20,7 @@ from app.chat.event_writer import (
     fail_run,
     start_run,
 )
+from app.chat.failures import safe_failure
 from app.persistence.models import Message, ResponseRun
 from app.providers.protocol import (
     CancelSignal,
@@ -29,14 +28,11 @@ from app.providers.protocol import (
     ProviderDelta,
     ProviderMessage,
     ProviderStreamError,
+    Usage,
 )
 from app.settings import Settings
 
 logger = logging.getLogger(__name__)
-
-
-def _failure_for(code: str, message: str) -> SafeFailure:
-    return SafeFailure(code=code, message=message, retryable=code != "output_limit_exceeded")
 
 
 def wait_budget_seconds(
@@ -86,7 +82,7 @@ class GenerationSupervisor:
         await self._renew_lease(run_id)
         if run_id in self._tasks:
             return
-        self._tasks[run_id] = asyncio.create_task(self._run(run_id))
+        self._tasks[run_id] = asyncio.create_task(self._supervise_run(run_id))
 
     async def shutdown(self, grace_seconds: float) -> None:
         self._admitting = False
@@ -129,7 +125,7 @@ class GenerationSupervisor:
                 run.lease_expires_at = now + timedelta(seconds=self._settings.lease_seconds)
                 run.updated_at = now
 
-    async def _run(self, run_id: UUID) -> None:
+    async def _supervise_run(self, run_id: UUID) -> None:
         signal = CancelSignal()
         try:
             if await self._cancel_requested(run_id):
@@ -152,8 +148,8 @@ class GenerationSupervisor:
             logger.exception("run %s persistence failed", run_id)
             await self._safe_fail(run_id, "persistence_failed")
         except Exception:
-            logger.exception("run %s failed", run_id)
-            await self._safe_fail(run_id, "provider_unavailable")
+            logger.exception("run %s failed unexpectedly", run_id)
+            await self._safe_fail(run_id, "persistence_failed")
         finally:
             self._tasks.pop(run_id, None)
 
@@ -284,10 +280,8 @@ class GenerationSupervisor:
         return message.content if message else ""
 
     async def _safe_fail(self, run_id: UUID, code: str) -> None:
-        with contextlib.suppress(Exception):
+        try:
             async with self._session_factory() as session:
-                await fail_run(
-                    run_id,
-                    _failure_for(code, "The assistant could not finish this response."),
-                    session=session,
-                )
+                await fail_run(run_id, safe_failure(code), session=session)
+        except Exception:
+            logger.exception("run %s could not be marked failed", run_id)

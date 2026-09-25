@@ -33,6 +33,6 @@ This directory is an execution map, not application code. Read `../Implementatio
 | Planning | Approved | Explicit user approval, 2026-09-19, baseline `53c1b7c` |
 | 00 | Approved and merged | Phase 00 PR merged |
 | 01 | Approved and merged | PR #4 merged into main |
-| 02 | Implemented; PR open | `phase-02-response-lifecycle`, 7 commits |
-| 03 | Implemented; pending gate review | TDD complete on `phase-03-provider-streaming` (4 phase-scoped commits) |
+| 02 | Implemented; PR open | `phase-02-response-lifecycle` |
+| 03 | Implemented; pending gate review | `phase-03-provider-streaming` |
 | 04–08 | Not started | Phase 03 gate remains |

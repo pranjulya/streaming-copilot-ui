@@ -15,6 +15,7 @@ from app.persistence.models import (
     StreamEventRecord,
     uuid7,
 )
+from app.providers.protocol import Usage
 
 PROTOCOL_VERSION = "1.0"
 
@@ -41,12 +42,6 @@ class StreamEvent:
             "run_id": str(self.run_id),
             "data": self.data,
         }
-
-
-@dataclass(frozen=True)
-class Usage:
-    input_tokens: int
-    output_tokens: int
 
 
 @dataclass(frozen=True)

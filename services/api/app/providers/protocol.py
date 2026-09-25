@@ -3,7 +3,11 @@ from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
-from app.chat.event_writer import Usage
+
+@dataclass(frozen=True)
+class Usage:
+    input_tokens: int
+    output_tokens: int
 
 
 @dataclass(frozen=True)
@@ -42,9 +46,6 @@ class CancelSignal:
     @property
     def cancelled(self) -> bool:
         return self._event.is_set()
-
-    async def wait(self) -> None:
-        await self._event.wait()
 
 
 class LlmProvider(Protocol):

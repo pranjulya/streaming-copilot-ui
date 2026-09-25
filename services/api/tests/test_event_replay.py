@@ -7,10 +7,8 @@ pytestmark = pytest.mark.skipif(
     not os.getenv("TEST_DATABASE_URL"), reason="Set TEST_DATABASE_URL for real Postgres"
 )
 
-from tests.test_retry_regenerate import (  # noqa: E402
-    seed_turn,
-    writer_factory,
-)
+from tests.support import writer_factory  # noqa: E402
+from tests.test_retry_regenerate import seed_turn  # noqa: E402
 
 
 def test_follow_events_returns_only_events_after_cursor() -> None:
