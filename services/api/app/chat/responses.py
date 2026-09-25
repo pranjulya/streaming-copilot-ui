@@ -1,0 +1,633 @@
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from uuid import UUID
+
+from sqlalchemy import ColumnElement, func, or_, select, text
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.api.auth import Actor
+from app.api.errors import AppError
+from app.chat.event_writer import SafeFailure, fail_locked_run
+from app.chat.state_machine import InvalidStateTransition, is_terminal
+from app.persistence.models import (
+    Conversation,
+    IdempotencyRecord,
+    Message,
+    ResponseRun,
+)
+from app.settings import Settings
+
+ACTIVE_RUN_STATUSES = ("queued", "streaming", "cancelling")
+TERMINAL_RUN_STATUSES = ("completed", "cancelled", "failed")
+PROVIDER_NAME = "xai"
+DEFAULT_TITLE = "New conversation"
+
+
+@dataclass(frozen=True)
+class CreateResponse:
+    conversation_id: UUID
+    client_message_id: UUID
+    content: str
+    idempotency_key: UUID
+    request_hash: str
+
+
+async def _lock_user(session: AsyncSession, user_id: str) -> None:
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtext(:user_id))"), {"user_id": user_id}
+    )
+
+
+async def _owned_conversation(
+    session: AsyncSession, conversation_id: UUID, user_id: str
+) -> Conversation:
+    conversation = await session.scalar(
+        select(Conversation)
+        .where(Conversation.id == conversation_id, Conversation.user_id == user_id)
+        .with_for_update()
+    )
+    if conversation is None:
+        raise AppError(404, "not_found", "Conversation not found")
+    return conversation
+
+
+async def _active_run_id(session: AsyncSession, conversation_id: UUID) -> UUID | None:
+    result = await session.scalars(
+        select(ResponseRun.id).where(
+            ResponseRun.conversation_id == conversation_id,
+            ResponseRun.status.in_(ACTIVE_RUN_STATUSES),
+        )
+    )
+    return result.first()
+
+
+async def _assert_capacity(session: AsyncSession, user_id: str, settings: Settings) -> None:
+    active = await session.scalar(
+        select(func.count(ResponseRun.id)).where(
+            ResponseRun.user_id == user_id,
+            ResponseRun.status.in_(ACTIVE_RUN_STATUSES),
+        )
+    )
+    if (active or 0) >= settings.max_active_runs_per_user:
+        raise AppError(
+            409,
+            "too_many_active_runs",
+            "Too many active responses for this user",
+        )
+
+
+async def _find_key(
+    session: AsyncSession,
+    user_id: str,
+    operation: str,
+    key: UUID,
+    request_hash: str,
+) -> IdempotencyRecord | None:
+    record = await session.get(IdempotencyRecord, (user_id, operation, key))
+    if record is None:
+        return None
+    if record.expires_at <= datetime.now(UTC):
+        run = await session.get(ResponseRun, record.resource_id)
+        if run is None or run.status not in ACTIVE_RUN_STATUSES:
+            await session.delete(record)
+            return None
+    if record.request_hash != request_hash:
+        raise AppError(
+            409,
+            "idempotency_key_conflict",
+            "Idempotency-Key was already used with a different request",
+        )
+    return record
+
+
+async def _keyed_run(
+    session: AsyncSession,
+    record: IdempotencyRecord | None,
+    user_id: str,
+) -> ResponseRun | None:
+    if record is None:
+        return None
+    run = await session.get(ResponseRun, record.resource_id)
+    if run is None or run.user_id != user_id:
+        raise AppError(
+            409,
+            "idempotency_key_conflict",
+            "Idempotency-Key refers to a run that no longer exists",
+        )
+    return run
+
+
+def _store_key(
+    session: AsyncSession,
+    *,
+    user_id: str,
+    operation: str,
+    key: UUID,
+    request_hash: str,
+    resource_id: UUID,
+    settings: Settings,
+) -> None:
+    session.add(
+        IdempotencyRecord(
+            user_id=user_id,
+            operation=operation,
+            key=key,
+            request_hash=request_hash,
+            resource_id=resource_id,
+            expires_at=datetime.now(UTC) + timedelta(hours=settings.idempotency_ttl_hours),
+        )
+    )
+
+
+def _queued_run(
+    *,
+    conversation_id: UUID,
+    user_id: str,
+    user_message_id: UUID,
+    assistant_message_id: UUID,
+    attempt: int,
+    settings: Settings,
+) -> ResponseRun:
+    now = datetime.now(UTC)
+    return ResponseRun(
+        conversation_id=conversation_id,
+        user_id=user_id,
+        user_message_id=user_message_id,
+        assistant_message_id=assistant_message_id,
+        status="queued",
+        attempt=attempt,
+        provider=PROVIDER_NAME,
+        model=settings.xai_model,
+        last_sequence=0,
+        owner_instance_id=settings.instance_id,
+        lease_expires_at=now + timedelta(seconds=settings.lease_seconds),
+        created_at=now,
+        updated_at=now,
+    )
+
+
+async def create_response(
+    cmd: CreateResponse, actor: Actor, *, session: AsyncSession, settings: Settings
+) -> ResponseRun:
+    content = cmd.content.strip()
+    if not content:
+        raise AppError(400, "validation_failed", "content must not be empty")
+    if len(content) > settings.max_message_chars:
+        raise AppError(400, "validation_failed", "content exceeds the configured limit")
+    operation = "create_response"
+    for _ in range(2):
+        try:
+            async with session.begin():
+                await _lock_user(session, actor.user_id)
+                conversation = await _owned_conversation(
+                    session, cmd.conversation_id, actor.user_id
+                )
+                if conversation.archived_at is not None:
+                    raise AppError(409, "conversation_archived", "Conversation is archived")
+                record = await _find_key(
+                    session, actor.user_id, operation, cmd.idempotency_key, cmd.request_hash
+                )
+                replay = await _keyed_run(session, record, actor.user_id)
+                if replay is not None:
+                    return replay
+                existing_message = await session.scalar(
+                    select(Message).where(
+                        Message.conversation_id == cmd.conversation_id,
+                        Message.client_message_id == cmd.client_message_id,
+                    )
+                )
+                if existing_message is not None:
+                    existing_run = await session.scalar(
+                        select(ResponseRun).where(
+                            ResponseRun.user_message_id == existing_message.id
+                        )
+                    )
+                    if existing_run is None:
+                        raise AppError(
+                            409,
+                            "idempotency_key_conflict",
+                            "Existing turn has no response run",
+                        )
+                    return existing_run
+                active = await _active_run_id(session, cmd.conversation_id)
+                if active is not None:
+                    raise AppError(
+                        409,
+                        "conversation_busy",
+                        "Conversation already has an active response",
+                        conversation_id=str(cmd.conversation_id),
+                        active_run_id=str(active),
+                    )
+                await _assert_capacity(session, actor.user_id, settings)
+                user_message = Message(
+                    conversation_id=cmd.conversation_id,
+                    role="user",
+                    content=content,
+                    status="complete",
+                    client_message_id=cmd.client_message_id,
+                )
+                session.add(user_message)
+                await session.flush()
+                assistant_message = Message(
+                    conversation_id=cmd.conversation_id,
+                    role="assistant",
+                    content="",
+                    status="partial",
+                    in_reply_to_id=user_message.id,
+                )
+                session.add(assistant_message)
+                await session.flush()
+                run = _queued_run(
+                    conversation_id=cmd.conversation_id,
+                    user_id=actor.user_id,
+                    user_message_id=user_message.id,
+                    assistant_message_id=assistant_message.id,
+                    attempt=1,
+                    settings=settings,
+                )
+                session.add(run)
+                await session.flush()
+                _store_key(
+                    session,
+                    user_id=actor.user_id,
+                    operation=operation,
+                    key=cmd.idempotency_key,
+                    request_hash=cmd.request_hash,
+                    resource_id=run.id,
+                    settings=settings,
+                )
+                first_turn = (
+                    await session.scalar(
+                        select(func.count(Message.id)).where(
+                            Message.conversation_id == cmd.conversation_id,
+                            Message.role == "user",
+                        )
+                    )
+                    == 1
+                )
+                if first_turn and conversation.title == DEFAULT_TITLE:
+                    conversation.title = content[:80]
+                    conversation.updated_at = datetime.now(UTC)
+                return run
+        except IntegrityError:
+            continue
+    raise AppError(
+        409,
+        "conversation_busy",
+        "Conversation already has an active response",
+        conversation_id=str(cmd.conversation_id),
+    )
+
+
+async def retry_run(
+    source_run_id: UUID,
+    actor: Actor,
+    *,
+    session: AsyncSession,
+    settings: Settings,
+    idempotency_key: UUID | None = None,
+    request_hash: str | None = None,
+) -> ResponseRun:
+    operation = "retry_run"
+    for _ in range(2):
+        try:
+            async with session.begin():
+                await _lock_user(session, actor.user_id)
+                source = await session.scalar(
+                    select(ResponseRun).where(
+                        ResponseRun.id == source_run_id,
+                        ResponseRun.user_id == actor.user_id,
+                    )
+                )
+                if source is None:
+                    raise AppError(404, "not_found", "Response run not found")
+                if source.status not in ("failed", "cancelled"):
+                    raise AppError(
+                        409,
+                        "invalid_run_state",
+                        "Retry is only allowed from failed or cancelled runs",
+                    )
+                conversation = await _owned_conversation(
+                    session, source.conversation_id, actor.user_id
+                )
+                if conversation.archived_at is not None:
+                    raise AppError(409, "conversation_archived", "Conversation is archived")
+                if idempotency_key is not None and request_hash is not None:
+                    record = await _find_key(
+                        session, actor.user_id, operation, idempotency_key, request_hash
+                    )
+                    replay = await _keyed_run(session, record, actor.user_id)
+                    if replay is not None:
+                        return replay
+                active = await _active_run_id(session, source.conversation_id)
+                if active is not None:
+                    raise AppError(
+                        409,
+                        "conversation_busy",
+                        "Conversation already has an active response",
+                        conversation_id=str(source.conversation_id),
+                        active_run_id=str(active),
+                    )
+                await _assert_capacity(session, actor.user_id, settings)
+                previous = await session.scalar(
+                    select(Message).where(
+                        Message.in_reply_to_id == source.user_message_id,
+                        Message.role == "assistant",
+                        Message.is_visible.is_(True),
+                    )
+                )
+                if previous is not None:
+                    previous.is_visible = False
+                    previous.updated_at = datetime.now(UTC)
+                new_assistant = Message(
+                    conversation_id=source.conversation_id,
+                    role="assistant",
+                    content="",
+                    status="partial",
+                    in_reply_to_id=source.user_message_id,
+                    version=(previous.version + 1) if previous is not None else 1,
+                )
+                session.add(new_assistant)
+                await session.flush()
+                run = _queued_run(
+                    conversation_id=source.conversation_id,
+                    user_id=actor.user_id,
+                    user_message_id=source.user_message_id,
+                    assistant_message_id=new_assistant.id,
+                    attempt=source.attempt + 1,
+                    settings=settings,
+                )
+                session.add(run)
+                await session.flush()
+                if idempotency_key is not None and request_hash is not None:
+                    _store_key(
+                        session,
+                        user_id=actor.user_id,
+                        operation=operation,
+                        key=idempotency_key,
+                        request_hash=request_hash,
+                        resource_id=run.id,
+                        settings=settings,
+                    )
+                return run
+        except IntegrityError:
+            continue
+    raise AppError(
+        409,
+        "conversation_busy",
+        "Conversation already has an active response",
+    )
+
+
+async def regenerate_message(
+    user_message_id: UUID,
+    actor: Actor,
+    *,
+    session: AsyncSession,
+    settings: Settings,
+    idempotency_key: UUID | None = None,
+    request_hash: str | None = None,
+) -> ResponseRun:
+    operation = "regenerate_message"
+    for _ in range(2):
+        try:
+            async with session.begin():
+                await _lock_user(session, actor.user_id)
+                message = await session.scalar(
+                    select(Message)
+                    .join(Conversation, Message.conversation_id == Conversation.id)
+                    .where(
+                        Message.id == user_message_id,
+                        Message.role == "user",
+                        Conversation.user_id == actor.user_id,
+                    )
+                )
+                if message is None:
+                    raise AppError(404, "not_found", "Message not found")
+                conversation = await _owned_conversation(
+                    session, message.conversation_id, actor.user_id
+                )
+                if conversation.archived_at is not None:
+                    raise AppError(409, "conversation_archived", "Conversation is archived")
+                if idempotency_key is not None and request_hash is not None:
+                    record = await _find_key(
+                        session, actor.user_id, operation, idempotency_key, request_hash
+                    )
+                    replay = await _keyed_run(session, record, actor.user_id)
+                    if replay is not None:
+                        return replay
+                active = await _active_run_id(session, message.conversation_id)
+                if active is not None:
+                    raise AppError(
+                        409,
+                        "conversation_busy",
+                        "Conversation already has an active response",
+                        conversation_id=str(message.conversation_id),
+                        active_run_id=str(active),
+                    )
+                visible = await session.scalar(
+                    select(Message).where(
+                        Message.in_reply_to_id == user_message_id,
+                        Message.role == "assistant",
+                        Message.is_visible.is_(True),
+                    )
+                )
+                if visible is None:
+                    raise AppError(
+                        409,
+                        "invalid_run_state",
+                        "There is no visible answer to regenerate",
+                    )
+                await _assert_capacity(session, actor.user_id, settings)
+                source_run = await session.scalar(
+                    select(ResponseRun)
+                    .where(ResponseRun.assistant_message_id == visible.id)
+                    .order_by(ResponseRun.created_at.desc())
+                    .limit(1)
+                )
+                if source_run is not None and source_run.status == "completed":
+                    attempt = 1
+                elif source_run is not None:
+                    attempt = source_run.attempt + 1
+                else:
+                    attempt = 1
+                visible.is_visible = False
+                visible.updated_at = datetime.now(UTC)
+                new_assistant = Message(
+                    conversation_id=message.conversation_id,
+                    role="assistant",
+                    content="",
+                    status="partial",
+                    in_reply_to_id=user_message_id,
+                    version=visible.version + 1,
+                )
+                session.add(new_assistant)
+                await session.flush()
+                run = _queued_run(
+                    conversation_id=message.conversation_id,
+                    user_id=actor.user_id,
+                    user_message_id=user_message_id,
+                    assistant_message_id=new_assistant.id,
+                    attempt=attempt,
+                    settings=settings,
+                )
+                session.add(run)
+                await session.flush()
+                if idempotency_key is not None and request_hash is not None:
+                    _store_key(
+                        session,
+                        user_id=actor.user_id,
+                        operation=operation,
+                        key=idempotency_key,
+                        request_hash=request_hash,
+                        resource_id=run.id,
+                        settings=settings,
+                    )
+                return run
+        except IntegrityError:
+            continue
+    raise AppError(
+        409,
+        "conversation_busy",
+        "Conversation already has an active response",
+    )
+
+
+def _restart_failure() -> SafeFailure:
+    return SafeFailure(
+        code="server_restart",
+        message="The assistant stopped responding. Retrying is safe.",
+        retryable=True,
+    )
+
+
+def _orphan_condition(settings: Settings, *, include_own_instance: bool) -> ColumnElement[bool]:
+    now = datetime.now(UTC)
+    conditions = [
+        ResponseRun.lease_expires_at.is_(None),
+        ResponseRun.lease_expires_at <= now,
+    ]
+    if include_own_instance:
+        conditions.append(ResponseRun.owner_instance_id == settings.instance_id)
+    return or_(*conditions)
+
+
+def _is_orphan_run(run: ResponseRun, settings: Settings, *, include_own_instance: bool) -> bool:
+    if run.lease_expires_at is None or run.lease_expires_at <= datetime.now(UTC):
+        return True
+    return include_own_instance and run.owner_instance_id == settings.instance_id
+
+
+async def _fail_targets(
+    session: AsyncSession,
+    target_ids: list[UUID],
+    settings: Settings,
+    *,
+    include_own_instance: bool,
+) -> int:
+    reaped = 0
+    for run_id in target_ids:
+        try:
+            async with session.begin():
+                run = await session.scalar(
+                    select(ResponseRun).where(ResponseRun.id == run_id).with_for_update()
+                )
+                if run is None or run.status not in ACTIVE_RUN_STATUSES:
+                    continue
+                if not _is_orphan_run(run, settings, include_own_instance=include_own_instance):
+                    continue
+                await fail_locked_run(session, run, _restart_failure())
+            reaped += 1
+        except InvalidStateTransition:
+            continue
+    return reaped
+
+
+async def reap_orphaned_runs(*, session: AsyncSession, settings: Settings) -> int:
+    async with session.begin():
+        target_ids = list(
+            (
+                await session.scalars(
+                    select(ResponseRun.id).where(
+                        ResponseRun.status.in_(ACTIVE_RUN_STATUSES),
+                        _orphan_condition(settings, include_own_instance=True),
+                    )
+                )
+            ).all()
+        )
+    return await _fail_targets(session, target_ids, settings, include_own_instance=True)
+
+
+async def reap_expired_leases(*, session: AsyncSession, settings: Settings) -> int:
+    async with session.begin():
+        target_ids = list(
+            (
+                await session.scalars(
+                    select(ResponseRun.id).where(
+                        ResponseRun.status.in_(ACTIVE_RUN_STATUSES),
+                        _orphan_condition(settings, include_own_instance=False),
+                    )
+                )
+            ).all()
+        )
+    return await _fail_targets(session, target_ids, settings, include_own_instance=False)
+
+
+@dataclass(frozen=True)
+class RunSnapshot:
+    run: ResponseRun
+    partial_content: str
+
+
+async def get_run(run_id: UUID, actor: Actor, *, session: AsyncSession) -> RunSnapshot:
+    run = await session.scalar(
+        select(ResponseRun).where(ResponseRun.id == run_id, ResponseRun.user_id == actor.user_id)
+    )
+    if run is None:
+        raise AppError(404, "not_found", "Response run not found")
+    message = await session.get(Message, run.assistant_message_id)
+    return RunSnapshot(run=run, partial_content=message.content if message else "")
+
+
+async def request_cancel(run_id: UUID, actor: Actor, *, session: AsyncSession) -> RunSnapshot:
+    async with session.begin():
+        run = await session.scalar(
+            select(ResponseRun)
+            .where(ResponseRun.id == run_id, ResponseRun.user_id == actor.user_id)
+            .with_for_update()
+        )
+        if run is None:
+            raise AppError(404, "not_found", "Response run not found")
+        if not is_terminal(run.status) and run.cancel_requested_at is None:
+            run.cancel_requested_at = datetime.now(UTC)
+            run.updated_at = run.cancel_requested_at
+        message = await session.get(Message, run.assistant_message_id)
+        return RunSnapshot(run=run, partial_content=message.content if message else "")
+
+
+async def active_run_map(session: AsyncSession, conversation_ids: list[UUID]) -> dict[UUID, UUID]:
+    if not conversation_ids:
+        return {}
+    rows = (
+        await session.execute(
+            select(ResponseRun.conversation_id, ResponseRun.id).where(
+                ResponseRun.conversation_id.in_(conversation_ids),
+                ResponseRun.status.in_(ACTIVE_RUN_STATUSES),
+            )
+        )
+    ).all()
+    return {row[0]: row[1] for row in rows}
+
+
+async def active_run_snapshot(session: AsyncSession, conversation_id: UUID) -> RunSnapshot | None:
+    run = await session.scalar(
+        select(ResponseRun).where(
+            ResponseRun.conversation_id == conversation_id,
+            ResponseRun.status.in_(ACTIVE_RUN_STATUSES),
+        )
+    )
+    if run is None:
+        return None
+    message = await session.get(Message, run.assistant_message_id)
+    return RunSnapshot(run=run, partial_content=message.content if message else "")

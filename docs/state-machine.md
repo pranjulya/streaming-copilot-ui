@@ -23,6 +23,8 @@ stateDiagram-v2
 
 Allowed states are `queued`, `streaming`, `cancelling`, `completed`, `cancelled`, and `failed`. Terminal states never transition. Retry and regenerate create a new run; they do not reopen an old run.
 
+A cancel request is recorded as `cancel_requested_at` on the run and does not move the run by itself. The canceller — the run supervisor, or the cancel transaction inline while no stream is open — passes the run through `cancelling` to `cancelled` inside that single transaction, so `cancelling` is transient and is not observed persisted in V1. A stored `cancelling` row (for example one written by a future supervisor) is still active and is subject to orphan recovery.
+
 ## 2. Client stream state
 
 ```mermaid
