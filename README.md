@@ -6,7 +6,7 @@ Agent entrypoint: [`AGENTS.md`](AGENTS.md) (required at repo root for Grok/SOL a
 
 ## Status
 
-**Planning approved on 2026-09-19 at `53c1b7c`. Phase 00 implementation is under verification.** Later phases remain behind the Phase 00 review gate.
+**Planning approved on 2026-09-19 at `53c1b7c`.** Phase 00 (foundation and frozen V1 contracts, [PR #1](https://github.com/pranjulya/streaming-copilot-ui/pull/1)) and Phase 01 (persistence and conversation API, [PR #4](https://github.com/pranjulya/streaming-copilot-ui/pull/4)) are on `main`. Phase 01 still needs an explicit gate review before Phase 02. Phases 02–08 are on their branches and are not on `main`. The web shell still only shows the “Copilot” heading until Phase 04.
 
 ## Locked decisions
 
@@ -48,7 +48,7 @@ Agent entrypoint: [`AGENTS.md`](AGENTS.md) (required at repo root for Grok/SOL a
 
 ## Review gate
 
-The complete planning package and Phase 00 were explicitly authorized in the project conversation. Review Phase 00 verification before beginning Phase 01.
+The complete planning package and Phase 00 were explicitly authorized in the project conversation. Phase 00 and Phase 01 are on `main`. Review Phase 01 before beginning Phase 02.
 
 
 ## Local run (Phase 00)
