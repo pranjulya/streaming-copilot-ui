@@ -4,7 +4,7 @@ This directory is an execution map, not application code. Read `../Implementatio
 
 ## Approval state
 
-**APPROVED:** the user explicitly approved the full planning package and Phase 00 on 2026-09-19 at `53c1b7c`. Stop at the Phase 00 review gate before Phase 01.
+**APPROVED:** Planning and Phase 00 authorized 2026-09-19 at `53c1b7c`. Phases 00 and 01 are on `main` ([PR #1](https://github.com/pranjulya/streaming-copilot-ui/pull/1), [PR #4](https://github.com/pranjulya/streaming-copilot-ui/pull/4)). Stop at the Phase 01 review gate before Phase 02.
 
 ## Phases
 
@@ -31,6 +31,6 @@ This directory is an execution map, not application code. Read `../Implementatio
 | Phase | Status | Approval evidence |
 |---:|---|---|
 | Planning | Approved | Explicit user approval, 2026-09-19, baseline `53c1b7c` |
-| 00 | Implementation under verification | Phase 00 explicitly authorized in the same conversation |
-| 01 | Implemented; pending gate review | TDD complete on `phase-01-persistence-and-conversations` (3 phase-scoped commits) |
-| 02–08 | Not started | Phase 01 gate remains |
+| 00 | On `main` ([PR #1](https://github.com/pranjulya/streaming-copilot-ui/pull/1)) | Phase 00 explicitly authorized 2026-09-19 |
+| 01 | On `main`; pending gate review ([PR #4](https://github.com/pranjulya/streaming-copilot-ui/pull/4)) | Merged; review before Phase 02 |
+| 02–08 | On their branches, not on `main` | Phase 01 gate remains |
