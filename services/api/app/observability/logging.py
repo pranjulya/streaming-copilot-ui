@@ -74,5 +74,4 @@ def configure_logging(level: str = "INFO") -> None:
 
 def log_span(logger: logging.Logger, name: str, **fields: object) -> None:
     """Structured span line; provider text and prompts are never passed here."""
-    safe_fields = {key: value for key, value in fields.items()}
-    logger.info("%s", name, extra=safe_fields)
+    logger.info("%s", name, extra=fields)

@@ -1,4 +1,4 @@
-export type RunStatus = "queued" | "streaming" | "cancelling";
+import type { RunStatus } from "../state/chatReducer";
 
 const LABELS: Record<RunStatus, string> = {
   queued: "Waiting to start…",

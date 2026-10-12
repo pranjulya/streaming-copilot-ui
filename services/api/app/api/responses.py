@@ -22,6 +22,7 @@ from app.chat.responses import (
     regenerate_message,
     retry_run,
 )
+from app.chat.state_machine import is_terminal
 from app.observability.metrics import (
     RECONNECT_CATCHUP_SECONDS,
     SERVICE_FIRST_EVENT_SECONDS,
@@ -32,7 +33,6 @@ from app.settings import Settings
 
 logger = logging.getLogger(__name__)
 
-TERMINAL_STATUSES = ("completed", "cancelled", "failed")
 NDJSON_MEDIA_TYPE = "application/x-ndjson; charset=utf-8"
 
 router = APIRouter(prefix="/v1", tags=["responses"])
@@ -109,7 +109,7 @@ async def _follow(
             catchup_observed = True
         if run is None:
             return
-        if run.status in TERMINAL_STATUSES and not events:
+        if is_terminal(run.status) and not events:
             return
         if loop.time() - last_emit >= settings.heartbeat_interval_seconds:
             heartbeat = _heartbeat_line(run)

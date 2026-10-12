@@ -13,6 +13,62 @@ export type TurnStatus =
   | "cancelled"
   | "failed";
 
+/** The run statuses the server reports, and the only ones the indicator shows. */
+export type RunStatus = "queued" | "streaming" | "cancelling";
+
+const RUN_STATUSES: ReadonlySet<string> = new Set<RunStatus>([
+  "queued",
+  "streaming",
+  "cancelling",
+]);
+
+const ACTIVE_TURN_STATUSES: ReadonlySet<TurnStatus> = new Set<TurnStatus>([
+  "submitting",
+  "connecting",
+  "streaming",
+  "stopping",
+  "reconciling",
+]);
+
+const TERMINAL_TURN_STATUSES: ReadonlySet<TurnStatus> = new Set<TurnStatus>([
+  "completed",
+  "cancelled",
+  "failed",
+]);
+
+export function isActiveTurnStatus(status: TurnStatus): boolean {
+  return ACTIVE_TURN_STATUSES.has(status);
+}
+
+export function asRunStatus(value: unknown): RunStatus | null {
+  return typeof value === "string" && RUN_STATUSES.has(value)
+    ? (value as RunStatus)
+    : null;
+}
+
+export function asTerminalTurnStatus(value: unknown): TurnStatus | null {
+  return typeof value === "string" &&
+    TERMINAL_TURN_STATUSES.has(value as TurnStatus)
+    ? (value as TurnStatus)
+    : null;
+}
+
+/**
+ * What the run indicator should show: the turn's own progress while it is live,
+ * otherwise the server's view of the active run.
+ */
+export function indicatorStatus(
+  turn: TurnState,
+  activeRunStatus: unknown,
+): RunStatus | null {
+  if (turn.status === "streaming") return "streaming";
+  if (turn.status === "stopping") return "cancelling";
+  if (turn.status === "submitting" || turn.status === "connecting") {
+    return "queued";
+  }
+  return asRunStatus(activeRunStatus);
+}
+
 export type TurnState = {
   clientMessageId: string | null;
   userMessageId: string | null;
@@ -331,9 +387,9 @@ function applyEvent(
 }
 
 function snapshotStatus(event: StreamEvent): TurnStatus {
-  const status = String(event.data.status ?? "streaming");
-  if (status === "queued" || status === "cancelling") return status;
-  if (status === "completed" || status === "cancelled" || status === "failed")
-    return status;
-  return "streaming";
+  return (
+    asRunStatus(event.data.status) ??
+    asTerminalTurnStatus(event.data.status) ??
+    "streaming"
+  );
 }

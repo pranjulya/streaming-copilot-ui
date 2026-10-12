@@ -7,8 +7,14 @@ TRANSITIONS: dict[str, frozenset[str]] = {
     "failed": frozenset(),
 }
 
-TERMINAL_STATUSES = frozenset({"completed", "cancelled", "failed"})
-NONTERMINAL_STATUSES = frozenset({"queued", "streaming", "cancelling"})
+# The single vocabulary for run statuses. The ordered tuples are the source of
+# truth so that SQL built from them stays deterministic; the frozensets are for
+# membership tests.
+ACTIVE_STATUS_ORDER: tuple[str, ...] = ("queued", "streaming", "cancelling")
+TERMINAL_STATUS_ORDER: tuple[str, ...] = ("completed", "cancelled", "failed")
+
+ACTIVE_STATUSES = frozenset(ACTIVE_STATUS_ORDER)
+TERMINAL_STATUSES = frozenset(TERMINAL_STATUS_ORDER)
 
 
 class InvalidStateTransition(Exception):

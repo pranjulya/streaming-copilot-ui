@@ -64,10 +64,9 @@ def _csrf_match(header: str, cookie: str) -> bool:
         return False
 
 
-def _cookie_authenticated_mutation(request: Request) -> bool:
-    if request.method in ("GET", "HEAD", "OPTIONS"):
-        return False
-    return True
+def _requires_csrf(request: Request) -> bool:
+    """Cookie auth has no bearer proof, so state-changing methods need CSRF + Origin."""
+    return request.method not in ("GET", "HEAD", "OPTIONS")
 
 
 def authenticate(request: Request, settings: Settings) -> tuple[str, str]:
@@ -81,7 +80,7 @@ def authenticate(request: Request, settings: Settings) -> tuple[str, str]:
         cookie_token = request.cookies.get(cookie_name)
         if cookie_token:
             user_id = verifier.actor_user_id(cookie_token)
-            if _cookie_authenticated_mutation(request):
+            if _requires_csrf(request):
                 csrf_header = request.headers.get("x-csrf-token")
                 csrf_cookie = request.cookies.get("csrf_token")
                 if not csrf_header or not csrf_cookie or not _csrf_match(csrf_header, csrf_cookie):

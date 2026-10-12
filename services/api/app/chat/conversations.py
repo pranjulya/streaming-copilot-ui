@@ -9,13 +9,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.auth import Actor
 from app.api.errors import AppError
-from app.chat.responses import RunSnapshot, active_run_snapshot
+from app.chat.idempotency import find_record
+from app.chat.responses import (
+    DEFAULT_CONVERSATION_TITLE,
+    RunSnapshot,
+    active_run_snapshot,
+)
 from app.observability.metrics import IDEMPOTENCY_HITS_TOTAL
 from app.persistence import conversations as repository
 from app.persistence.models import Conversation, IdempotencyRecord, Message
 from app.settings import Settings
-
-DEFAULT_CONVERSATION_TITLE = "New conversation"
 
 
 @dataclass(frozen=True)
@@ -72,41 +75,25 @@ def _cursor_or_reject(cursor: str | None) -> tuple[datetime, UUID] | None:
     return decoded
 
 
-def _expires_at() -> datetime:
-    return datetime.now(UTC) + timedelta(hours=Settings().idempotency_ttl_hours)
-
-
-async def _find_valid_record(
-    session: AsyncSession,
-    user_id: str,
-    operation: str,
-    key: UUID,
-    request_hash: str,
-) -> IdempotencyRecord | None:
-    record = await repository.get_idempotency(session, user_id, operation, key)
-    if record is None:
-        return None
-    if record.expires_at <= datetime.now(UTC):
-        await repository.delete_idempotency(session, record)
-        await session.commit()
-        return None
-    if record.request_hash != request_hash:
-        IDEMPOTENCY_HITS_TOTAL.labels(operation=operation, result="conflict").inc()
-        raise AppError(
-            409,
-            "idempotency_key_conflict",
-            "Idempotency-Key was already used with a different request",
-        )
-    return record
+def _expires_at(settings: Settings) -> datetime:
+    return datetime.now(UTC) + timedelta(hours=settings.idempotency_ttl_hours)
 
 
 async def create_conversation(
-    cmd: CreateConversation, actor: Actor, *, session: AsyncSession
+    cmd: CreateConversation,
+    actor: Actor,
+    *,
+    session: AsyncSession,
+    settings: Settings,
 ) -> Conversation:
     operation = "create_conversation"
     for _ in range(2):
-        record = await _find_valid_record(
-            session, actor.user_id, operation, cmd.idempotency_key, cmd.request_hash
+        record = await find_record(
+            session,
+            user_id=actor.user_id,
+            operation=operation,
+            key=cmd.idempotency_key,
+            request_hash=cmd.request_hash,
         )
         if record is not None:
             conversation = await repository.get_conversation(
@@ -133,7 +120,7 @@ async def create_conversation(
                 key=cmd.idempotency_key,
                 request_hash=cmd.request_hash,
                 resource_id=conversation.id,
-                expires_at=_expires_at(),
+                expires_at=_expires_at(settings),
             )
         )
         try:
@@ -201,6 +188,7 @@ async def patch_conversation(
     key: UUID,
     *,
     session: AsyncSession,
+    settings: Settings,
     request_hash: str,
 ) -> Conversation:
     operation = "patch_conversation"
@@ -208,7 +196,13 @@ async def patch_conversation(
     if conversation is None:
         raise AppError(404, "not_found", "Conversation not found")
     for _ in range(2):
-        record = await _find_valid_record(session, actor.user_id, operation, key, request_hash)
+        record = await find_record(
+            session,
+            user_id=actor.user_id,
+            operation=operation,
+            key=key,
+            request_hash=request_hash,
+        )
         if record is not None:
             current = await repository.get_conversation(session, id, actor.user_id)
             if current is None:
@@ -229,7 +223,7 @@ async def patch_conversation(
                 key=key,
                 request_hash=request_hash,
                 resource_id=conversation.id,
-                expires_at=_expires_at(),
+                expires_at=_expires_at(settings),
             )
         )
         try:
