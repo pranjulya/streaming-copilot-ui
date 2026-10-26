@@ -138,8 +138,9 @@ class IdempotencyRecord(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
-ACTIVE_RUN_STATUSES = "('queued','streaming','cancelling')"
-NONTERMINAL_RUN_STATUSES = "('queued','streaming','cancelling')"
+# Frozen DDL: this predicate is part of the shipped index definition, so
+# changing it is a schema change and needs a migration.
+ACTIVE_RUN_STATUS_SQL = "('queued','streaming','cancelling')"
 
 
 class ResponseRun(Base):
@@ -153,12 +154,12 @@ class ResponseRun(Base):
             "uq_response_runs_one_active",
             "conversation_id",
             unique=True,
-            postgresql_where=text(f"status IN {ACTIVE_RUN_STATUSES}"),
+            postgresql_where=text(f"status IN {ACTIVE_RUN_STATUS_SQL}"),
         ),
         Index(
             "ix_response_runs_user_active",
             "user_id",
-            postgresql_where=text(f"status IN {NONTERMINAL_RUN_STATUSES}"),
+            postgresql_where=text(f"status IN {ACTIVE_RUN_STATUS_SQL}"),
         ),
         ForeignKeyConstraint(
             ["conversation_id", "user_id"],

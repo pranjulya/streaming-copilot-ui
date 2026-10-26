@@ -1,18 +1,20 @@
-name: Phase 00 checks
+name: Copilot checks
 
 on:
   pull_request:
   push:
-    branches: [main, phase-00-foundation-and-contracts]
+    branches: [main]
 
 permissions:
   contents: read
 
 concurrency:
-  group: phase-00-${{ github.ref }}
+  group: copilot-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  # Job id kept as `foundation` so any required-status-check configuration on
+  # main keeps matching; the workflow above covers every phase, not just 00.
   foundation:
     runs-on: ubuntu-latest
     timeout-minutes: 15

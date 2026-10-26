@@ -10,7 +10,13 @@ import {
   type ConversationClient,
   type Message,
 } from "../api/client";
-import { chatReducer, emptyTurn, initialChatState } from "../state/chatReducer";
+import {
+  chatReducer,
+  emptyTurn,
+  indicatorStatus,
+  initialChatState,
+  isActiveTurnStatus,
+} from "../state/chatReducer";
 import {
   busyActiveRunId,
   followActiveRun,
@@ -25,14 +31,6 @@ import type { ParseResult } from "../stream/parseNdjson";
 import { Composer } from "./Composer";
 import { MessageBubble } from "./MessageBubble";
 import { StatusText } from "./StatusText";
-
-const ACTIVE_STATUSES = new Set([
-  "submitting",
-  "connecting",
-  "streaming",
-  "stopping",
-  "reconciling",
-]);
 
 const retryableNotice = "Send failed; check your connection and try again.";
 const rejectedNotice = "Send failed; your message was not stored.";
@@ -352,47 +350,13 @@ export function Transcript({
     }
   }, [client, conversationId, currentTurn, loadSnapshot, settleRun]);
 
-  const retry = useCallback(async () => {
-    const runId = currentTurn().runId;
-    if (runId === null) return;
-    dispatch({ type: "restart-turn", conversationId });
-    const result = await runStreamedTurn(
-      { kind: "retry", runId },
-      currentTurn().clientMessageId ?? crypto.randomUUID(),
-      crypto.randomUUID(),
-    );
-    if (result.outcome === "incomplete" && result.runId !== null) {
-      await attachToActiveRun(result.runId, currentTurn().lastSequence);
-    } else if (
-      result.outcome === "rejected" ||
-      result.outcome === "network-unknown"
-    ) {
-      setNotice(
-        result.error instanceof ClientError
-          ? `Retry failed (${result.error.code}).`
-          : retryableNotice,
-      );
-    }
-    try {
-      await loadSnapshot();
-    } catch {
-      // Best-effort.
-    }
-  }, [
-    attachToActiveRun,
-    conversationId,
-    currentTurn,
-    loadSnapshot,
-    runStreamedTurn,
-  ]);
-
-  const regenerate = useCallback(
-    async (userMessageId: string) => {
+  const runReplacingTurn = useCallback(
+    async (label: string, turn: TurnKind, clientMessageId: string) => {
       dispatch({ type: "restart-turn", conversationId });
       const result = await runStreamedTurn(
-        { kind: "regenerate", userMessageId },
-        crypto.randomUUID(),
-        crypto.randomUUID(),
+        turn,
+        clientMessageId,
+        newIdempotencyKey(),
       );
       if (result.outcome === "incomplete" && result.runId !== null) {
         await attachToActiveRun(result.runId, currentTurn().lastSequence);
@@ -402,7 +366,7 @@ export function Transcript({
       ) {
         setNotice(
           result.error instanceof ClientError
-            ? `Regenerate failed (${result.error.code}).`
+            ? `${label} failed (${result.error.code}).`
             : retryableNotice,
         );
       }
@@ -419,6 +383,27 @@ export function Transcript({
       loadSnapshot,
       runStreamedTurn,
     ],
+  );
+
+  const retry = useCallback(async () => {
+    const runId = currentTurn().runId;
+    if (runId === null) return;
+    await runReplacingTurn(
+      "Retry",
+      { kind: "retry", runId },
+      currentTurn().clientMessageId ?? newClientMessageId(),
+    );
+  }, [currentTurn, runReplacingTurn]);
+
+  const regenerate = useCallback(
+    async (userMessageId: string) => {
+      await runReplacingTurn(
+        "Regenerate",
+        { kind: "regenerate", userMessageId },
+        newClientMessageId(),
+      );
+    },
+    [runReplacingTurn],
   );
 
   const recoverWhenOnline = useCallback(async () => {
@@ -519,7 +504,7 @@ export function Transcript({
   const showLiveAssistant =
     turn.assistantContent !== "" &&
     !canonicalHasAssistant &&
-    (ACTIVE_STATUSES.has(turn.status) || turn.status === "completed");
+    (isActiveTurnStatus(turn.status) || turn.status === "completed");
   const lastAssistant = [...visible]
     .reverse()
     .find((message) => message.role === "assistant");
@@ -542,18 +527,7 @@ export function Transcript({
   });
 
   const activeRunStatus = snapshot.active_run?.status;
-  const statusForIndicator =
-    turn.status === "streaming"
-      ? "streaming"
-      : turn.status === "stopping"
-        ? "cancelling"
-        : turn.status === "submitting" || turn.status === "connecting"
-          ? "queued"
-          : activeRunStatus === "queued" ||
-              activeRunStatus === "streaming" ||
-              activeRunStatus === "cancelling"
-            ? activeRunStatus
-            : null;
+  const statusForIndicator = indicatorStatus(turn, activeRunStatus);
 
   return (
     <section className="transcript" aria-label="Conversation">
@@ -581,7 +555,7 @@ export function Transcript({
         </ol>
       )}
       <div className="turn-controls">
-        {ACTIVE_STATUSES.has(turn.status) ? (
+        {isActiveTurnStatus(turn.status) ? (
           <button type="button" onClick={() => void stop()}>
             Stop
           </button>
@@ -602,7 +576,7 @@ export function Transcript({
         ) : null}
       </div>
       <Composer
-        busy={ACTIVE_STATUSES.has(turn.status)}
+        busy={isActiveTurnStatus(turn.status)}
         onSubmit={(content) => submit(content)}
       />
       <p className="composer-notice" role="status">

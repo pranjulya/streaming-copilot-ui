@@ -10,7 +10,13 @@ from app.api.auth import Actor
 from app.api.errors import AppError
 from app.chat.event_writer import fail_locked_run
 from app.chat.failures import safe_failure
-from app.chat.state_machine import InvalidStateTransition, is_terminal
+from app.chat.idempotency import find_record, run_still_active
+from app.chat.state_machine import (
+    ACTIVE_STATUS_ORDER,
+    ACTIVE_STATUSES,
+    InvalidStateTransition,
+    is_terminal,
+)
 from app.observability.metrics import IDEMPOTENCY_HITS_TOTAL, RUNS_ORPHANED_TOTAL
 from app.persistence.models import (
     Conversation,
@@ -21,10 +27,8 @@ from app.persistence.models import (
 from app.persistence.session import db_transaction
 from app.settings import Settings
 
-ACTIVE_RUN_STATUSES = ("queued", "streaming", "cancelling")
-TERMINAL_RUN_STATUSES = ("completed", "cancelled", "failed")
 PROVIDER_NAME = "xai"
-DEFAULT_TITLE = "New conversation"
+DEFAULT_CONVERSATION_TITLE = "New conversation"
 
 
 @dataclass(frozen=True)
@@ -59,7 +63,7 @@ async def _active_run_id(session: AsyncSession, conversation_id: UUID) -> UUID |
     result = await session.scalars(
         select(ResponseRun.id).where(
             ResponseRun.conversation_id == conversation_id,
-            ResponseRun.status.in_(ACTIVE_RUN_STATUSES),
+            ResponseRun.status.in_(ACTIVE_STATUS_ORDER),
         )
     )
     return result.first()
@@ -69,7 +73,7 @@ async def _assert_capacity(session: AsyncSession, user_id: str, settings: Settin
     active = await session.scalar(
         select(func.count(ResponseRun.id)).where(
             ResponseRun.user_id == user_id,
-            ResponseRun.status.in_(ACTIVE_RUN_STATUSES),
+            ResponseRun.status.in_(ACTIVE_STATUS_ORDER),
         )
     )
     if (active or 0) >= settings.max_active_runs_per_user:
@@ -78,31 +82,6 @@ async def _assert_capacity(session: AsyncSession, user_id: str, settings: Settin
             "too_many_active_runs",
             "Too many active responses for this user",
         )
-
-
-async def _find_key(
-    session: AsyncSession,
-    user_id: str,
-    operation: str,
-    key: UUID,
-    request_hash: str,
-) -> IdempotencyRecord | None:
-    record = await session.get(IdempotencyRecord, (user_id, operation, key))
-    if record is None:
-        return None
-    if record.expires_at <= datetime.now(UTC):
-        run = await session.get(ResponseRun, record.resource_id)
-        if run is None or run.status not in ACTIVE_RUN_STATUSES:
-            await session.delete(record)
-            return None
-    if record.request_hash != request_hash:
-        IDEMPOTENCY_HITS_TOTAL.labels(operation=operation, result="conflict").inc()
-        raise AppError(
-            409,
-            "idempotency_key_conflict",
-            "Idempotency-Key was already used with a different request",
-        )
-    return record
 
 
 async def _keyed_run(
@@ -192,8 +171,13 @@ async def create_response(
                 )
                 if conversation.archived_at is not None:
                     raise AppError(409, "conversation_archived", "Conversation is archived")
-                record = await _find_key(
-                    session, actor.user_id, operation, cmd.idempotency_key, cmd.request_hash
+                record = await find_record(
+                    session,
+                    user_id=actor.user_id,
+                    operation=operation,
+                    key=cmd.idempotency_key,
+                    request_hash=cmd.request_hash,
+                    still_live=run_still_active,
                 )
                 replay = await _keyed_run(session, record, actor.user_id, operation)
                 if replay is not None:
@@ -274,7 +258,7 @@ async def create_response(
                     )
                     == 1
                 )
-                if first_turn and conversation.title == DEFAULT_TITLE:
+                if first_turn and conversation.title == DEFAULT_CONVERSATION_TITLE:
                     conversation.title = content[:80]
                     conversation.updated_at = datetime.now(UTC)
                 return run
@@ -322,8 +306,13 @@ async def retry_run(
                 if conversation.archived_at is not None:
                     raise AppError(409, "conversation_archived", "Conversation is archived")
                 if idempotency_key is not None and request_hash is not None:
-                    record = await _find_key(
-                        session, actor.user_id, operation, idempotency_key, request_hash
+                    record = await find_record(
+                        session,
+                        user_id=actor.user_id,
+                        operation=operation,
+                        key=idempotency_key,
+                        request_hash=request_hash,
+                        still_live=run_still_active,
                     )
                     replay = await _keyed_run(session, record, actor.user_id, operation)
                     if replay is not None:
@@ -419,8 +408,13 @@ async def regenerate_message(
                 if conversation.archived_at is not None:
                     raise AppError(409, "conversation_archived", "Conversation is archived")
                 if idempotency_key is not None and request_hash is not None:
-                    record = await _find_key(
-                        session, actor.user_id, operation, idempotency_key, request_hash
+                    record = await find_record(
+                        session,
+                        user_id=actor.user_id,
+                        operation=operation,
+                        key=idempotency_key,
+                        request_hash=request_hash,
+                        still_live=run_still_active,
                     )
                     replay = await _keyed_run(session, record, actor.user_id, operation)
                     if replay is not None:
@@ -533,7 +527,7 @@ async def _fail_targets(
                 run = await session.scalar(
                     select(ResponseRun).where(ResponseRun.id == run_id).with_for_update()
                 )
-                if run is None or run.status not in ACTIVE_RUN_STATUSES:
+                if run is None or run.status not in ACTIVE_STATUSES:
                     continue
                 if not _is_orphan_run(run, settings, include_own_instance=include_own_instance):
                     continue
@@ -551,7 +545,7 @@ async def reap_orphaned_runs(*, session: AsyncSession, settings: Settings) -> in
             (
                 await session.scalars(
                     select(ResponseRun.id).where(
-                        ResponseRun.status.in_(ACTIVE_RUN_STATUSES),
+                        ResponseRun.status.in_(ACTIVE_STATUS_ORDER),
                         _orphan_condition(settings, include_own_instance=True),
                     )
                 )
@@ -566,7 +560,7 @@ async def reap_expired_leases(*, session: AsyncSession, settings: Settings) -> i
             (
                 await session.scalars(
                     select(ResponseRun.id).where(
-                        ResponseRun.status.in_(ACTIVE_RUN_STATUSES),
+                        ResponseRun.status.in_(ACTIVE_STATUS_ORDER),
                         _orphan_condition(settings, include_own_instance=False),
                     )
                 )
@@ -614,7 +608,7 @@ async def active_run_map(session: AsyncSession, conversation_ids: list[UUID]) ->
         await session.execute(
             select(ResponseRun.conversation_id, ResponseRun.id).where(
                 ResponseRun.conversation_id.in_(conversation_ids),
-                ResponseRun.status.in_(ACTIVE_RUN_STATUSES),
+                ResponseRun.status.in_(ACTIVE_STATUS_ORDER),
             )
         )
     ).all()
@@ -625,7 +619,7 @@ async def active_run_snapshot(session: AsyncSession, conversation_id: UUID) -> R
     run = await session.scalar(
         select(ResponseRun).where(
             ResponseRun.conversation_id == conversation_id,
-            ResponseRun.status.in_(ACTIVE_RUN_STATUSES),
+            ResponseRun.status.in_(ACTIVE_STATUS_ORDER),
         )
     )
     if run is None:

@@ -4,7 +4,7 @@ from uuid import UUID
 from sqlalchemy import and_, desc, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.persistence.models import Conversation, IdempotencyRecord, Message
+from app.persistence.models import Conversation, Message
 
 
 async def get_conversation(
@@ -62,13 +62,3 @@ async def list_messages(
         )
     statement = statement.order_by(Message.created_at, Message.id).limit(limit)
     return list((await session.scalars(statement)).all())
-
-
-async def get_idempotency(
-    session: AsyncSession, user_id: str, operation: str, key: UUID
-) -> IdempotencyRecord | None:
-    return await session.get(IdempotencyRecord, (user_id, operation, key))
-
-
-async def delete_idempotency(session: AsyncSession, record: IdempotencyRecord) -> None:
-    await session.delete(record)

@@ -6,8 +6,6 @@ from datetime import UTC, datetime
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-TERMINAL_STATUSES = ("completed", "cancelled", "failed")
-
 
 def database_url() -> str:
     return os.environ["TEST_DATABASE_URL"]

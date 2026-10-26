@@ -22,8 +22,6 @@ from app.persistence.session import get_session
 
 router = APIRouter(prefix="/v1/conversations", tags=["conversations"])
 
-CREATE_OPERATION_LIMITS = (1, 100)
-
 
 def _validated_title(value: object) -> str:
     if not isinstance(value, str):
@@ -82,7 +80,9 @@ async def create_conversation_route(
         idempotency_key=require_idempotency_key(request),
         request_hash=fingerprint(raw_body, "POST", request.url.path),
     )
-    conversation = await create_conversation(cmd, actor, session=session)
+    conversation = await create_conversation(
+        cmd, actor, session=session, settings=request.app.state.settings
+    )
     active = await active_run_map(session, [conversation.id])
     return conversation_dict(conversation, active_run_id=active.get(conversation.id))
 
@@ -155,6 +155,7 @@ async def patch_conversation_route(
         actor,
         require_idempotency_key(request),
         session=session,
+        settings=request.app.state.settings,
         request_hash=fingerprint(raw_body, "PATCH", request.url.path),
     )
     active = await active_run_map(session, [conversation.id])
