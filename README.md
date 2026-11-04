@@ -62,6 +62,7 @@ docker compose up -d --wait
 docker compose exec postgres pg_isready -U copilot
 uv sync --project services/api --locked
 pnpm --dir apps/web install --frozen-lockfile
+uv run --project services/api alembic -c services/api/alembic.ini upgrade head
 uv run --project services/api uvicorn app.main:create_app --factory --app-dir services/api --host 127.0.0.1 --port 8000
 ```
 
@@ -78,7 +79,7 @@ curl --fail http://127.0.0.1:3000/health/live
 curl --fail http://127.0.0.1:3000/health/ready
 ```
 
-Expect `{"status":"live"}` and `{"status":"ready","database":"ok"}`. Database failure returns HTTP 503 with a safe problem response. Liveness remains HTTP 200.
+Expect `{"status":"live"}` and `{"status":"ready","database":"ok"}`. Readiness checks connectivity, not the schema: if you skip the migration step, `/health/ready` still reports ready but `/v1/conversations` returns HTTP 503. Re-run the migration after `docker compose down -v`. Database failure returns HTTP 503 with a safe problem response. Liveness remains HTTP 200.
 
 ## Verification
 
