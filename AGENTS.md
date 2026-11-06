@@ -4,9 +4,9 @@ Project rules for any coding agent working in this repository. Do not copy the s
 
 ## Status
 
-The user **explicitly approved the complete planning package and Phase 00 on 2026-09-19**, at baseline `53c1b7c`. Phase 00 implementation is under verification. The scaffolding approval gate is satisfied.
+The user **explicitly approved the complete planning package and Phase 00 on 2026-09-19**, at baseline `53c1b7c`. Phase 00 ([PR #1](https://github.com/pranjulya/streaming-copilot-ui/pull/1)) and Phase 01 ([PR #4](https://github.com/pranjulya/streaming-copilot-ui/pull/4)) are on `main`. Phase 01 still needs an explicit gate review before Phase 02.
 
-After approval, implement **one phase at a time** from `implementation/phase-00-foundation-and-contracts.md` onward. Stop at each phase gate.
+Implement **one phase at a time**. Start from `implementation/phase-02-response-lifecycle.md` only after the Phase 01 gate is approved. Stop at each phase gate. Do not re-implement Phase 00 or Phase 01 on `main`.
 
 ## Required reading (in order)
 
